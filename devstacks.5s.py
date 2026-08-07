@@ -2,7 +2,8 @@
 
 # <bitbar.title>Dev Stacks</bitbar.title>
 # <bitbar.version>1.3</bitbar.version>
-# <bitbar.author>lookprep/grais workspace</bitbar.author>
+# <bitbar.author>Mathias Asberg</bitbar.author>
+# <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
 # <bitbar.dependencies>python3,process-compose,docker</bitbar.dependencies>
 #

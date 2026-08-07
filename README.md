@@ -31,7 +31,7 @@ Containers that don't belong to a configured project are grouped under
 ## Install
 
 ```bash
-git clone https://github.com/<you>/swiftbar-devstacks.git
+git clone https://github.com/Mindgames/swiftbar-devstacks.git
 cd swiftbar-devstacks
 ./install.sh
 ```
@@ -78,3 +78,7 @@ often, rename the file (and the symlink) to e.g. `devstacks.30s.py`.
   container list.
 - `docker ps` is called with a timeout — a wedged Docker daemon must not freeze
   the menu bar.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
