@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.5</bitbar.version>
+# <bitbar.version>1.6</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -128,6 +128,24 @@ def is_healthy(proc):
     status = (proc.get("status") or "").lower()
     ready = (proc.get("is_ready") or "").lower()
     return status == "running" and ready in NO_PROBE
+
+
+# Statuses that mean something actually went wrong, as opposed to "not there
+# yet". "Skipped" belongs here: process-compose skips a process whose
+# dependency never became healthy, so it is the visible half of a failure
+# upstream.
+BROKEN_STATUS = ("error", "failed", "restarting", "skipped")
+
+
+def is_broken(proc):
+    """Has this process failed, as distinct from merely not being ready yet?
+
+    A process that is running but still working through its readiness probe is
+    not broken — it is starting. Treating it as broken paints the menu bar red
+    for the first ten or fifteen seconds of every healthy launch, which teaches
+    you to ignore the colour exactly when it matters.
+    """
+    return (proc.get("status") or "").lower() in BROKEN_STATUS
 
 
 def proc_colour(proc):
@@ -269,11 +287,13 @@ def main():
     total_procs = sum(len(r) for _, r in running)
     healthy_procs = sum(1 for _, r in running for p in r if is_healthy(p))
 
-    # A "problem" is something actively wrong with a running stack: a process
-    # that is not healthy, or a container whose own healthcheck says unhealthy.
-    # A stack that is simply stopped is not a problem — it was not asked to run.
+    # A "problem" is something that has actually failed: a process in a broken
+    # status, or a container whose own healthcheck says unhealthy. Neither a
+    # stopped stack nor a process still warming up counts — the first was never
+    # asked to run, and the second has not failed at anything yet.
     sick_containers = sum(1 for c in (docker_rows or []) if "unhealthy" in c["status"])
-    problem = healthy_procs < total_procs or sick_containers > 0
+    broken_procs = sum(1 for _, r in running for p in r if is_broken(p))
+    problem = broken_procs > 0 or sick_containers > 0
 
     # Red: something is wrong. Grey: no stack is up. Green: a stack is up and
     # well. Checked in that order, so a real fault always outranks idleness.

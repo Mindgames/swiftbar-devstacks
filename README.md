@@ -11,11 +11,17 @@ The menu bar icon carries the state at a glance:
 
 | Icon | Meaning |
 | --- | --- |
-| green stack | a stack is up and everything in it is healthy |
-| red stack | a process is unhealthy, or a container's healthcheck is failing |
+| green stack | a stack is up and nothing in it has failed |
+| red stack | a process has failed, or a container's healthcheck is failing |
 | grey slashed stack | no stack is running |
 
 Checked in that order, so a real fault always outranks idleness.
+
+Red means *failed*, not *not ready yet*. A process still working through its
+readiness probe stays green, because a stack with a ten-second probe delay
+would otherwise flash red on every healthy launch — and a colour that cries
+wolf is a colour you stop reading. The statuses that count as failure are
+`Error`, `Failed`, `Restarting` and `Skipped`.
 
 Idle is judged on stacks alone, never on containers. Leftover containers — an
 observability stack that came back with Docker on login, say — leave the icon
