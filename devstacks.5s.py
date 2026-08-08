@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.9</bitbar.version>
+# <bitbar.version>2.0</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -52,10 +52,10 @@ DIM = "#8b949e"
 
 # How the menu bar icon is drawn:
 #
-#   "stack"  the layered stack drawn below, tinted and handed to SwiftBar as a
-#            base64 PNG via image=. Keeps the stack shape *and* the colour,
-#            because a supplied image is not a template image and so is not
-#            repainted to match the menu bar.
+#   "stack"  Apple's square.stack.3d.up.fill artwork, tinted and handed to
+#            SwiftBar as a base64 PNG via image=. Keeps the stack shape *and*
+#            the colour, because a supplied image is not a template image and
+#            so is not repainted to match the menu bar.
 #   "text"   a glyph tinted with color=. Plainer, but the same colour path.
 #   "emoji"  a coloured dot; colour cannot be discarded, since the glyph
 #            carries its own.
@@ -71,56 +71,33 @@ EMOJI_ICON = {"problem": "🔴", "idle": "⚪️", "ok": "🟢"}
 SYMBOL_ICON = "square.stack.3d.up.fill"
 
 # ---- the stack icon ---------------------------------------------------------
-# Drawn rather than shipped as an asset, so the plugin stays a single file with
-# no binary blobs, and a colour change is a hex edit rather than a redraw.
+# Apple's own square.stack.3d.up.fill, captured once as an alpha mask and
+# recoloured here for each state.
+#
+# Baking the colour into a PNG is the entire point. A supplied image is not a
+# template image, so macOS leaves it alone; an sfimage is, so macOS repaints it
+# to match the menu bar and the tint disappears.
+#
+# 32x32 pixels written at 144 DPI, which loads as a 16x16 *point* image: menu
+# bar sized, and crisp on a retina display. The DPI is not decoration — at the
+# default 72 the same pixels load as a 32 point image and tower over the bar.
 
-ICON_PIXELS = 36
-ICON_SUPERSAMPLE = 4
+ICON_PIXELS = 32
+ICON_DPI = 144
+ICON_MASK = (
+    "eNpjYEAGzqWBLAw4gdWp////3w3CISu95D8E7NXFIstR/eU/DPyZIoQuHXjvPzJ4m82M"
+    "LKuz9z86uOwElxWa8uc/FrBWESzLnP32P3bwvYWbgcHw4n/c4IkXw5f/+MBfp//4QeNd"
+    "vNIftIQX/sMtvVsF6AGLUzhk7wZC/M+Y+ByL7JcqdngI8Xb9RJP9t1gKIuXNBqZUNqNI"
+    "n7KEmOzG+/+WD0Sh+3W47PNERrCQybH/pUDudg0wj7XgA1j2ZxcvmC8+D+iztCKgzb/6"
+    "+MEiotN//v+3ThXMZiv5CFQ7lZlBfTuQfpXCBFHhKAd11i2g6DkbMNvnNpB91gYpPahv"
+    "A+lJY4Jy2co+AfnLZKBc/t5f////niAA5siCSYkFQLd8reUAMpmSXwIV79QEi0sx/V+r"
+    "AGaZnQCK3g9htD0LpO/4QRLW5D+pwGTSzA0Oi/hnQJlvQPy5AhyyzFlv/v8vWwpKJlGQ"
+    "UO4EhfK/RZCQdbwE5BzlYwh9CKSPGIPFlCYfXQhhKawBir4vAKVyzgagoX/niCH5j6vp"
+    "O1BoliiUK7cSqPhjEStMOvIxkH/IAEmD3XmgyA1PMNvoMJD9KBw1fzGlvwaKblFjEJv9"
+    "F+iLBk6YBAAUyhJ9"
+)
 
-# Three layers in a 36x36 box: a wide base with two narrower slabs above it,
-# which is what reads as a stack seen from slightly above.
-ICON_LAYERS = [
-    (12.0, 4.0, 24.0, 8.0, 1.8),
-    (8.0, 11.0, 28.0, 16.0, 2.4),
-    (4.0, 19.0, 32.0, 32.0, 4.0),
-]
-
-_ICON_MASK = None
 _ICON_CACHE = {}
-
-
-def _in_round_rect(x, y, x0, y0, x1, y1, r):
-    if x < x0 or x > x1 or y < y0 or y > y1:
-        return False
-    cx = min(max(x, x0 + r), x1 - r)
-    cy = min(max(y, y0 + r), y1 - r)
-    return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
-
-
-def _icon_mask():
-    """Alpha coverage for the stack, supersampled so the corners are smooth.
-
-    Computed once and reused: the shape never changes, only its colour does.
-    """
-    global _ICON_MASK
-    if _ICON_MASK is None:
-        step = 1.0 / ICON_SUPERSAMPLE
-        samples = ICON_SUPERSAMPLE * ICON_SUPERSAMPLE
-        _ICON_MASK = [
-            [
-                sum(
-                    1
-                    for sy in range(ICON_SUPERSAMPLE)
-                    for sx in range(ICON_SUPERSAMPLE)
-                    if any(_in_round_rect(px + (sx + 0.5) * step,
-                                          py + (sy + 0.5) * step, *layer)
-                           for layer in ICON_LAYERS)
-                ) * 255 // samples
-                for px in range(ICON_PIXELS)
-            ]
-            for py in range(ICON_PIXELS)
-        ]
-    return _ICON_MASK
 
 
 def _png_chunk(tag, payload):
@@ -129,17 +106,23 @@ def _png_chunk(tag, payload):
 
 
 def stack_icon(hex_colour):
-    """The stack as a base64 PNG in `hex_colour`, ready for SwiftBar's image=."""
+    """The stack symbol as a base64 PNG in `hex_colour`, for SwiftBar's image=."""
     if hex_colour not in _ICON_CACHE:
+        mask = zlib.decompress(base64.b64decode(ICON_MASK))
         r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+        pixel = bytes((r, g, b))
+
         raw = bytearray()
-        for row in _icon_mask():
+        for row in range(ICON_PIXELS):
             raw.append(0)                                  # PNG filter type 0
-            for alpha in row:
-                raw += bytes((r, g, b, alpha))
+            for alpha in mask[row * ICON_PIXELS:(row + 1) * ICON_PIXELS]:
+                raw += pixel + bytes((alpha,))
+
+        per_metre = round(ICON_DPI / 0.0254)
         png = (b"\x89PNG\r\n\x1a\n"
                + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", ICON_PIXELS,
                                                  ICON_PIXELS, 8, 6, 0, 0, 0))
+               + _png_chunk(b"pHYs", struct.pack(">IIB", per_metre, per_metre, 1))
                + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
                + _png_chunk(b"IEND", b""))
         _ICON_CACHE[hex_colour] = base64.b64encode(png).decode()

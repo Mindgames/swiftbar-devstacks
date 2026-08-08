@@ -106,9 +106,14 @@ See [`projects.example.json`](projects.example.json).
 | `emoji` | a coloured dot | yes |
 | `symbol` | an SF Symbol via `sfcolor` | not on every build |
 
-The default icon is drawn in code and handed to SwiftBar as a base64 PNG. A
+The default icon is Apple's own `square.stack.3d.up.fill`, captured once as an
+alpha mask and recoloured per state, then handed to SwiftBar as a base64 PNG. A
 supplied image is not a template image, so macOS does not repaint it to match
 the menu bar — which is how it keeps both the stack shape and the colour.
+
+It is 32x32 pixels written at **144 DPI**, so it loads as a 16x16 *point* image:
+menu bar sized, and crisp on retina. The DPI is not cosmetic — written at the
+default 72, the same pixels load as a 32 point image and tower over the bar.
 
 `symbol` is what this plugin originally shipped with. On macOS 26 with SwiftBar
 2.0.1 the `sfcolor` tint is discarded and the symbol renders as a monochrome
@@ -116,8 +121,9 @@ template image, identical in every state — which looks exactly like a plugin
 that has stopped updating. Keep it only if you have confirmed `sfcolor` works
 on your machine.
 
-To change the icon, edit `ICON_LAYERS`: each entry is a rounded rectangle,
-`(x0, y0, x1, y1, radius)`, in a 36x36 box.
+To use a different symbol, re-capture `ICON_MASK`: render any SF Symbol to a
+32x32 bitmap, take its alpha channel, and store it zlib-compressed and
+base64-encoded.
 
 ## Refresh interval
 
