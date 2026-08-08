@@ -25,8 +25,22 @@ import urllib.error
 import urllib.request
 
 CONFIG = os.path.expanduser("~/.config/devstacks/projects.json")
-# SwiftBar runs plugins with a minimal PATH; Homebrew is not on it by default.
-BIN_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# SwiftBar runs plugins with a minimal PATH: no Homebrew, and none of the
+# per-user bin directories where tools like uv and pipx install themselves.
+# A tool missing from here does not fail visibly — the process it belongs to
+# dies with exit 127 and restart-loops — so this list is deliberately generous,
+# and a project can add its own directories via the "path" config key.
+BIN_PATH = ":".join([
+    os.path.expanduser("~/.local/bin"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+])
 
 GREEN = "#3fb950"
 RED = "#f85149"
@@ -87,9 +101,15 @@ def processes(port):
     return rows if isinstance(rows, list) else None
 
 
-def action(command, cwd=None, terminal=False):
-    """Render SwiftBar params that run `command` through a login shell."""
-    full = f"export PATH={BIN_PATH}; "
+def action(command, cwd=None, terminal=False, extra_path=()):
+    """Render SwiftBar params that run `command` through a login shell.
+
+    PATH is *prepended*, never replaced. Replacing it silently drops whatever
+    the login shell set up — version-manager shims especially — and the damage
+    only shows up later as a child process exiting 127.
+    """
+    search = ":".join([*extra_path, BIN_PATH])
+    full = f'export PATH={shlex.quote(search)}:"$PATH"; '
     if cwd:
         full += f"cd {shlex.quote(cwd)} && "
     full += command
@@ -290,11 +310,12 @@ def main():
         directory = project.get("dir")
         up_command = project.get("up", "make native-up")
         mine = owned.get(name, [])
+        extra = [os.path.expanduser(p) for p in (project.get("path") or [])]
 
         if rows is None:
             suffix = f" · {len(mine)} containers" if mine else ""
             print(f"{name} — stopped{suffix} | {FONT} color={DIM}")
-            print(f"--Start stack | {action(up_command, directory)} color={GREEN}")
+            print(f"--Start stack | {action(up_command, directory, extra_path=extra)} color={GREEN}")
             if directory:
                 print(f"--Open folder | shell=/usr/bin/open param0={shlex.quote(directory)} terminal=false")
             for container in sorted(mine, key=lambda c: c["name"]):
@@ -322,12 +343,13 @@ def main():
             print(f"--{label} | {FONT} color={proc_colour(proc)}")
 
             pc = f"PC_PORT_NUM={port} process-compose process"
-            print(f"----Restart | {action(f'{pc} restart {shlex.quote(pname)}')}")
+            print(f"----Restart | {action(f'{pc} restart {shlex.quote(pname)}', extra_path=extra)}")
             if status.lower() == "running":
-                print(f"----Stop | {action(f'{pc} stop {shlex.quote(pname)}')} color={RED}")
+                print(f"----Stop | {action(f'{pc} stop {shlex.quote(pname)}', extra_path=extra)} color={RED}")
             else:
-                print(f"----Start | {action(f'{pc} start {shlex.quote(pname)}')} color={GREEN}")
-            print(f"----Logs (Terminal) | {action(f'{pc} logs {shlex.quote(pname)} -f -n 200', terminal=True)}")
+                print(f"----Start | {action(f'{pc} start {shlex.quote(pname)}', extra_path=extra)} color={GREEN}")
+            print(f"----Logs (Terminal) | "
+                  f"{action(f'{pc} logs {shlex.quote(pname)} -f -n 200', terminal=True, extra_path=extra)}")
 
         # Containers belonging to this project, alongside its processes.
         for container in sorted(mine, key=lambda c: c["name"]):
@@ -340,9 +362,12 @@ def main():
             for link in links:
                 print(f"----{link['label']}  —  {link['url']} | href={link['url']}")
 
-        print(f"--Dashboard (TUI) | {action(f'PC_PORT_NUM={port} process-compose attach', terminal=True)}")
-        print(f"--Restart stack | {action(f'PC_PORT_NUM={port} process-compose down && {up_command}', directory)}")
-        print(f"--Stop stack | {action(f'PC_PORT_NUM={port} process-compose down')} color={RED}")
+        print(f"--Dashboard (TUI) | "
+              f"{action(f'PC_PORT_NUM={port} process-compose attach', terminal=True, extra_path=extra)}")
+        print(f"--Restart stack | "
+              f"{action(f'PC_PORT_NUM={port} process-compose down && {up_command}', directory, extra_path=extra)}")
+        print(f"--Stop stack | "
+              f"{action(f'PC_PORT_NUM={port} process-compose down', extra_path=extra)} color={RED}")
         print("---")
 
     # ---- anything not belonging to a configured project ---------------------

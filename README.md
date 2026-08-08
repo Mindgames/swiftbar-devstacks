@@ -63,7 +63,25 @@ personal — it holds your local paths — and is deliberately kept outside the 
 | `dir` | no | Working directory for the start/restart commands, and for "Open folder" |
 | `up` | no | Command that brings the stack up (default `make native-up`) |
 | `compose` | no | Docker Compose project labels belonging to this project |
+| `path` | no | Extra `PATH` directories for this project's commands, `~` allowed |
 | `links` | no | `{label, url}` items listed under the "Open" submenu |
+
+### About `path`
+
+SwiftBar hands plugins a minimal `PATH` — no Homebrew, and none of the per-user
+bin directories. The plugin prepends a generous default set (including
+`~/.local/bin`, where `uv` and `pipx` install) and keeps whatever the login
+shell already had.
+
+That is not always enough. If your shell pins a specific toolchain — a
+Homebrew versioned formula like `node@22`, a `PNPM_HOME`, a version-manager
+shim directory — the menu bar will not see it, and your stack will start with
+different tool versions than your terminal gives it. List those directories in
+`path` so the two environments match.
+
+The symptom of a missing directory is a process that dies immediately with
+**exit code 127** and restart-loops, while everything that depends on it is
+reported as `Skipped`.
 
 See [`projects.example.json`](projects.example.json).
 

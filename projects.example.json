@@ -5,6 +5,7 @@
     "port": 8099,
     "up": "make native-up",
     "compose": ["myapp", "myapp-native-observability"],
+    "path": ["/opt/homebrew/opt/node@22/bin", "~/Library/pnpm"],
     "links": [
       { "label": "App",     "url": "http://localhost:3001" },
       { "label": "API docs", "url": "http://localhost:8001/docs" },
