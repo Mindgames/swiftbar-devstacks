@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.3</bitbar.version>
+# <bitbar.version>1.4</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -248,8 +248,16 @@ def main():
     running = [(p, r) for p, r in states if r is not None]
     total_procs = sum(len(r) for _, r in running)
     healthy_procs = sum(1 for _, r in running for p in r if is_healthy(p))
-    degraded = healthy_procs < total_procs
 
+    # A "problem" is something actively wrong with a running stack: a process
+    # that is not healthy, or a container whose own healthcheck says unhealthy.
+    # A stack that is simply stopped is not a problem — it was not asked to run.
+    sick_containers = sum(1 for c in (docker_rows or []) if "unhealthy" in c["status"])
+    problem = healthy_procs < total_procs or sick_containers > 0
+
+    # Green: everything that is up is well. Red: something is wrong.
+    # Grey: nothing is running at all.
+    #
     # Colour carries the state; the shape changes only for "nothing running",
     # so the icon stays easy to find in a crowded menu bar.
     #
@@ -261,7 +269,7 @@ def main():
     if not running and not docker_rows:
         print(f"| sfimage=square.stack.3d.up.slash sfcolor={DIM}")
     else:
-        print(f"| sfimage=square.stack.3d.up.fill sfcolor={AMBER if degraded else GREEN}")
+        print(f"| sfimage=square.stack.3d.up.fill sfcolor={RED if problem else GREEN}")
 
     print("---")
 
@@ -272,7 +280,7 @@ def main():
     if docker_rows:
         bits.append(f"{len(docker_rows)} {'container' if len(docker_rows) == 1 else 'containers'}")
     print(f"{' · '.join(bits) if bits else 'Nothing running'} | {FONT} "
-          f"color={AMBER if degraded else (GREEN if bits else DIM)}")
+          f"color={RED if problem else (GREEN if bits else DIM)}")
     print("---")
 
     # ---- one section per project --------------------------------------------

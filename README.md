@@ -11,9 +11,12 @@ The menu bar icon carries the state at a glance:
 
 | Icon | Meaning |
 | --- | --- |
-| green stack | every configured stack is up and every process healthy |
-| amber stack | something is running but degraded |
-| dimmed slashed stack | nothing running |
+| green stack | everything that is up is healthy |
+| red stack | a running process is unhealthy, or a container's healthcheck is failing |
+| grey slashed stack | nothing running |
+
+A stopped stack is not a problem — it stays green, because you never asked it to
+run. Red means something that *is* running has gone wrong.
 
 Per process you get restart / start / stop and streaming logs in a Terminal
 window. Per container: logs, restart, stop, and one-click links to any port the
