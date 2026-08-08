@@ -11,9 +11,9 @@ The menu bar icon carries the state at a glance:
 
 | Icon | Meaning |
 | --- | --- |
-| green stack | a stack is up and nothing in it has failed |
-| red stack | a process has failed, or a container's healthcheck is failing |
-| grey slashed stack | no stack is running |
+| green | a stack is up and nothing in it has failed |
+| red | a process has failed, or a container's healthcheck is failing |
+| grey | no stack is running |
 
 Checked in that order, so a real fault always outranks idleness.
 
@@ -94,6 +94,23 @@ The symptom of a missing directory is a process that dies immediately with
 reported as `Skipped`.
 
 See [`projects.example.json`](projects.example.json).
+
+## Menu bar icon style
+
+`ICON_STYLE` near the top of the plugin picks how the icon is drawn:
+
+| Value | Looks like | Colour reliability |
+| --- | --- | --- |
+| `text` (default) | a small square, tinted with `color=` | high — the same parameter every row in the menu uses |
+| `emoji` | a coloured dot | total — the glyph carries its own colour |
+| `symbol` | an SF Symbol tinted with `sfcolor` | varies by SwiftBar and macOS version |
+
+`symbol` is the nicest looking, but `sfcolor` is not honoured on every
+SwiftBar/macOS pairing. Where it is dropped the symbol falls back to a
+monochrome template image and *every state renders as the same grey shape* —
+which looks exactly like a plugin that has stopped updating. If your icon is
+grey no matter what the stacks are doing, that is the cause; switch to `text`
+or `emoji`.
 
 ## Refresh interval
 

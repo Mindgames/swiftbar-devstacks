@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.6</bitbar.version>
+# <bitbar.version>1.7</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -46,6 +46,30 @@ GREEN = "#3fb950"
 RED = "#f85149"
 AMBER = "#d29922"
 DIM = "#8b949e"
+
+# How the menu bar icon is drawn. Three options, in descending order of how
+# native they look and ascending order of how reliably they show colour:
+#
+#   "text"   a glyph tinted with color=, the same parameter every row in this
+#            menu already uses. Looks native, and colour arrives through the
+#            ordinary text path rather than the symbol path.
+#   "emoji"  a coloured dot. The only option whose colour cannot be discarded,
+#            because the glyph carries its own colour. Use it if "text" renders
+#            monochrome.
+#   "symbol" an SF Symbol tinted with sfcolor. The nicest looking, but sfcolor
+#            is not honoured on every SwiftBar/macOS pairing; where it is
+#            dropped the symbol becomes a monochrome template image and every
+#            state renders as the same grey shape.
+ICON_STYLE = "text"
+
+# Menu bar glyphs, per state.
+TEXT_ICON = {"problem": ("◼︎", RED), "idle": ("◻︎", DIM), "ok": ("◼︎", GREEN)}
+EMOJI_ICON = {"problem": "🔴", "idle": "⚪️", "ok": "🟢"}
+SYMBOL_ICON = {
+    "problem": ("square.stack.3d.up.fill", RED),
+    "idle": ("square.stack.3d.up.slash", DIM),
+    "ok": ("square.stack.3d.up.fill", GREEN),
+}
 
 FONT = "font=Menlo size=12"
 
@@ -312,12 +336,15 @@ def main():
     # choice for the degraded state, square.stack.3d.up.trianglebadge
     # .exclamationfill, does not exist, and an unresolved name renders as a
     # blank menu bar item: invisible exactly when something is wrong.
-    if problem:
-        print(f"| sfimage=square.stack.3d.up.fill sfcolor={RED}")
-    elif not running:
-        print(f"| sfimage=square.stack.3d.up.slash sfcolor={DIM}")
+    state = "problem" if problem else ("idle" if not running else "ok")
+    if ICON_STYLE == "symbol":
+        symbol, colour = SYMBOL_ICON[state]
+        print(f"| sfimage={symbol} sfcolor={colour}")
+    elif ICON_STYLE == "emoji":
+        print(EMOJI_ICON[state])
     else:
-        print(f"| sfimage=square.stack.3d.up.fill sfcolor={GREEN}")
+        glyph, colour = TEXT_ICON[state]
+        print(f"{glyph} | color={colour} size=14")
 
     print("---")
 
