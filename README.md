@@ -11,12 +11,16 @@ The menu bar icon carries the state at a glance:
 
 | Icon | Meaning |
 | --- | --- |
-| green stack | everything that is up is healthy |
-| red stack | a running process is unhealthy, or a container's healthcheck is failing |
-| grey slashed stack | nothing running |
+| green stack | a stack is up and everything in it is healthy |
+| red stack | a process is unhealthy, or a container's healthcheck is failing |
+| grey slashed stack | no stack is running |
 
-A stopped stack is not a problem — it stays green, because you never asked it to
-run. Red means something that *is* running has gone wrong.
+Checked in that order, so a real fault always outranks idleness.
+
+Idle is judged on stacks alone, never on containers. Leftover containers — an
+observability stack that came back with Docker on login, say — leave the icon
+grey rather than green, because "all is well" would be a lie when no stack is
+actually running. They are still listed in the menu.
 
 Per process you get restart / start / stop and streaming logs in a Terminal
 window. Per container: logs, restart, stop, and one-click links to any port the

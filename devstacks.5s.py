@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.4</bitbar.version>
+# <bitbar.version>1.5</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -275,21 +275,29 @@ def main():
     sick_containers = sum(1 for c in (docker_rows or []) if "unhealthy" in c["status"])
     problem = healthy_procs < total_procs or sick_containers > 0
 
-    # Green: everything that is up is well. Red: something is wrong.
-    # Grey: nothing is running at all.
+    # Red: something is wrong. Grey: no stack is up. Green: a stack is up and
+    # well. Checked in that order, so a real fault always outranks idleness.
     #
-    # Colour carries the state; the shape changes only for "nothing running",
-    # so the icon stays easy to find in a crowded menu bar.
+    # "Idle" is judged on stacks alone, never on containers. Leftover
+    # containers from a previous session — an observability stack that came
+    # back with Docker on login, say — must not paint the icon green while
+    # every actual stack is down: that reads as "all is well" when nothing is
+    # running at all.
+    #
+    # Colour carries the state; the shape changes only for idle, so the icon
+    # stays easy to find in a crowded menu bar.
     #
     # Both names below are verified to resolve via NSImage(systemSymbolName:).
     # Do not swap in a variant without checking it the same way — the obvious
     # choice for the degraded state, square.stack.3d.up.trianglebadge
     # .exclamationfill, does not exist, and an unresolved name renders as a
     # blank menu bar item: invisible exactly when something is wrong.
-    if not running and not docker_rows:
+    if problem:
+        print(f"| sfimage=square.stack.3d.up.fill sfcolor={RED}")
+    elif not running:
         print(f"| sfimage=square.stack.3d.up.slash sfcolor={DIM}")
     else:
-        print(f"| sfimage=square.stack.3d.up.fill sfcolor={RED if problem else GREEN}")
+        print(f"| sfimage=square.stack.3d.up.fill sfcolor={GREEN}")
 
     print("---")
 
@@ -300,7 +308,7 @@ def main():
     if docker_rows:
         bits.append(f"{len(docker_rows)} {'container' if len(docker_rows) == 1 else 'containers'}")
     print(f"{' · '.join(bits) if bits else 'Nothing running'} | {FONT} "
-          f"color={RED if problem else (GREEN if bits else DIM)}")
+          f"color={RED if problem else (GREEN if running else DIM)}")
     print("---")
 
     # ---- one section per project --------------------------------------------
