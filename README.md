@@ -99,18 +99,25 @@ See [`projects.example.json`](projects.example.json).
 
 `ICON_STYLE` near the top of the plugin picks how the icon is drawn:
 
-| Value | Looks like | Colour reliability |
+| Value | Looks like | Colour |
 | --- | --- | --- |
-| `text` (default) | a small square, tinted with `color=` | high — the same parameter every row in the menu uses |
-| `emoji` | a coloured dot | total — the glyph carries its own colour |
-| `symbol` | an SF Symbol tinted with `sfcolor` | varies by SwiftBar and macOS version |
+| `stack` (default) | a layered stack, drawn by the plugin | yes |
+| `text` | a small square glyph | yes |
+| `emoji` | a coloured dot | yes |
+| `symbol` | an SF Symbol via `sfcolor` | not on every build |
 
-`symbol` is the nicest looking, but `sfcolor` is not honoured on every
-SwiftBar/macOS pairing. Where it is dropped the symbol falls back to a
-monochrome template image and *every state renders as the same grey shape* —
-which looks exactly like a plugin that has stopped updating. If your icon is
-grey no matter what the stacks are doing, that is the cause; switch to `text`
-or `emoji`.
+The default icon is drawn in code and handed to SwiftBar as a base64 PNG. A
+supplied image is not a template image, so macOS does not repaint it to match
+the menu bar — which is how it keeps both the stack shape and the colour.
+
+`symbol` is what this plugin originally shipped with. On macOS 26 with SwiftBar
+2.0.1 the `sfcolor` tint is discarded and the symbol renders as a monochrome
+template image, identical in every state — which looks exactly like a plugin
+that has stopped updating. Keep it only if you have confirmed `sfcolor` works
+on your machine.
+
+To change the icon, edit `ICON_LAYERS`: each entry is a rounded rectangle,
+`(x0, y0, x1, y1, radius)`, in a 36x36 box.
 
 ## Refresh interval
 

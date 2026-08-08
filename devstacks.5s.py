@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.8</bitbar.version>
+# <bitbar.version>1.9</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -16,13 +16,16 @@
 #     "compose": ["lookprep", "lookprep-native-observability"],
 #     "links": [{"label": "App", "url": "http://localhost:3001"}]}]
 
+import base64
 import json
 import os
 import re
 import shlex
+import struct
 import subprocess
 import urllib.error
 import urllib.request
+import zlib
 
 CONFIG = os.path.expanduser("~/.config/devstacks/projects.json")
 
@@ -47,29 +50,101 @@ RED = "#f85149"
 AMBER = "#d29922"
 DIM = "#8b949e"
 
-# How the menu bar icon is drawn. Three options, in descending order of how
-# native they look and ascending order of how reliably they show colour:
+# How the menu bar icon is drawn:
 #
-#   "text"   a glyph tinted with color=, the same parameter every row in this
-#            menu already uses. Looks native, and colour arrives through the
-#            ordinary text path rather than the symbol path.
-#   "emoji"  a coloured dot. The only option whose colour cannot be discarded,
-#            because the glyph carries its own colour. Use it if "text" renders
-#            monochrome.
-#   "symbol" an SF Symbol tinted with sfcolor. The nicest looking, but sfcolor
-#            is not honoured on every SwiftBar/macOS pairing; where it is
-#            dropped the symbol becomes a monochrome template image and every
-#            state renders as the same grey shape.
-ICON_STYLE = "text"
-
-# One glyph for every state — only the colour changes. A shape that changes
-# too makes the icon harder to find at a glance, and the colour is already
-# carrying the meaning.
-MENU_GLYPH = "◼︎"
+#   "stack"  the layered stack drawn below, tinted and handed to SwiftBar as a
+#            base64 PNG via image=. Keeps the stack shape *and* the colour,
+#            because a supplied image is not a template image and so is not
+#            repainted to match the menu bar.
+#   "text"   a glyph tinted with color=. Plainer, but the same colour path.
+#   "emoji"  a coloured dot; colour cannot be discarded, since the glyph
+#            carries its own.
+#   "symbol" an SF Symbol tinted with sfcolor. This is what the plugin shipped
+#            with, and on macOS 26 with SwiftBar 2.0.1 the tint is discarded:
+#            the symbol renders as a monochrome template image, identical in
+#            every state. Kept only for builds where sfcolor is honoured.
+ICON_STYLE = "stack"
 
 STATE_COLOUR = {"problem": RED, "idle": DIM, "ok": GREEN}
+MENU_GLYPH = "◼︎"
 EMOJI_ICON = {"problem": "🔴", "idle": "⚪️", "ok": "🟢"}
 SYMBOL_ICON = "square.stack.3d.up.fill"
+
+# ---- the stack icon ---------------------------------------------------------
+# Drawn rather than shipped as an asset, so the plugin stays a single file with
+# no binary blobs, and a colour change is a hex edit rather than a redraw.
+
+ICON_PIXELS = 36
+ICON_SUPERSAMPLE = 4
+
+# Three layers in a 36x36 box: a wide base with two narrower slabs above it,
+# which is what reads as a stack seen from slightly above.
+ICON_LAYERS = [
+    (12.0, 4.0, 24.0, 8.0, 1.8),
+    (8.0, 11.0, 28.0, 16.0, 2.4),
+    (4.0, 19.0, 32.0, 32.0, 4.0),
+]
+
+_ICON_MASK = None
+_ICON_CACHE = {}
+
+
+def _in_round_rect(x, y, x0, y0, x1, y1, r):
+    if x < x0 or x > x1 or y < y0 or y > y1:
+        return False
+    cx = min(max(x, x0 + r), x1 - r)
+    cy = min(max(y, y0 + r), y1 - r)
+    return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+
+
+def _icon_mask():
+    """Alpha coverage for the stack, supersampled so the corners are smooth.
+
+    Computed once and reused: the shape never changes, only its colour does.
+    """
+    global _ICON_MASK
+    if _ICON_MASK is None:
+        step = 1.0 / ICON_SUPERSAMPLE
+        samples = ICON_SUPERSAMPLE * ICON_SUPERSAMPLE
+        _ICON_MASK = [
+            [
+                sum(
+                    1
+                    for sy in range(ICON_SUPERSAMPLE)
+                    for sx in range(ICON_SUPERSAMPLE)
+                    if any(_in_round_rect(px + (sx + 0.5) * step,
+                                          py + (sy + 0.5) * step, *layer)
+                           for layer in ICON_LAYERS)
+                ) * 255 // samples
+                for px in range(ICON_PIXELS)
+            ]
+            for py in range(ICON_PIXELS)
+        ]
+    return _ICON_MASK
+
+
+def _png_chunk(tag, payload):
+    return (struct.pack(">I", len(payload)) + tag + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+
+def stack_icon(hex_colour):
+    """The stack as a base64 PNG in `hex_colour`, ready for SwiftBar's image=."""
+    if hex_colour not in _ICON_CACHE:
+        r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+        raw = bytearray()
+        for row in _icon_mask():
+            raw.append(0)                                  # PNG filter type 0
+            for alpha in row:
+                raw += bytes((r, g, b, alpha))
+        png = (b"\x89PNG\r\n\x1a\n"
+               + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", ICON_PIXELS,
+                                                 ICON_PIXELS, 8, 6, 0, 0, 0))
+               + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+               + _png_chunk(b"IEND", b""))
+        _ICON_CACHE[hex_colour] = base64.b64encode(png).decode()
+    return _ICON_CACHE[hex_colour]
+
 
 FONT = "font=Menlo size=12"
 
@@ -337,7 +412,9 @@ def main():
     # .exclamationfill, does not exist, and an unresolved name renders as a
     # blank menu bar item: invisible exactly when something is wrong.
     state = "problem" if problem else ("idle" if not running else "ok")
-    if ICON_STYLE == "symbol":
+    if ICON_STYLE == "stack":
+        print(f"| image={stack_icon(STATE_COLOUR[state])}")
+    elif ICON_STYLE == "symbol":
         print(f"| sfimage={SYMBOL_ICON} sfcolor={STATE_COLOUR[state]}")
     elif ICON_STYLE == "emoji":
         print(EMOJI_ICON[state])
