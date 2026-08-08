@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>1.7</bitbar.version>
+# <bitbar.version>1.8</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
@@ -62,14 +62,14 @@ DIM = "#8b949e"
 #            state renders as the same grey shape.
 ICON_STYLE = "text"
 
-# Menu bar glyphs, per state.
-TEXT_ICON = {"problem": ("◼︎", RED), "idle": ("◻︎", DIM), "ok": ("◼︎", GREEN)}
+# One glyph for every state — only the colour changes. A shape that changes
+# too makes the icon harder to find at a glance, and the colour is already
+# carrying the meaning.
+MENU_GLYPH = "◼︎"
+
+STATE_COLOUR = {"problem": RED, "idle": DIM, "ok": GREEN}
 EMOJI_ICON = {"problem": "🔴", "idle": "⚪️", "ok": "🟢"}
-SYMBOL_ICON = {
-    "problem": ("square.stack.3d.up.fill", RED),
-    "idle": ("square.stack.3d.up.slash", DIM),
-    "ok": ("square.stack.3d.up.fill", GREEN),
-}
+SYMBOL_ICON = "square.stack.3d.up.fill"
 
 FONT = "font=Menlo size=12"
 
@@ -338,13 +338,11 @@ def main():
     # blank menu bar item: invisible exactly when something is wrong.
     state = "problem" if problem else ("idle" if not running else "ok")
     if ICON_STYLE == "symbol":
-        symbol, colour = SYMBOL_ICON[state]
-        print(f"| sfimage={symbol} sfcolor={colour}")
+        print(f"| sfimage={SYMBOL_ICON} sfcolor={STATE_COLOUR[state]}")
     elif ICON_STYLE == "emoji":
         print(EMOJI_ICON[state])
     else:
-        glyph, colour = TEXT_ICON[state]
-        print(f"{glyph} | color={colour} size=14")
+        print(f"{MENU_GLYPH} | color={STATE_COLOUR[state]} size=14")
 
     print("---")
 
