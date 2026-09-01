@@ -1,45 +1,32 @@
 # Dev Stacks — a SwiftBar plugin
 
-Start, stop and monitor [process-compose](https://github.com/F1bonacc1/process-compose)
-dev stacks and their Docker containers from the macOS menu bar.
+Start, stop, and monitor [Process Compose](https://github.com/F1bonacc1/process-compose)
+development stacks and their Docker containers from the macOS menu bar.
 
-One menu item per project. Each project's native processes come from its
-process-compose REST API; its containers are matched by Docker Compose project
-label. Adding a project is a config edit, not a code edit.
+Project controls run through the toolchain pinned by each repository. The
+plugin does not select or install Node, Python, pnpm, uv, or Process Compose.
+It uses `mise exec --locked -C <project-dir> -- <command>` for every managed
+action.
 
-The menu bar icon carries the state at a glance:
-
-| Icon | Meaning |
-| --- | --- |
-| green | a stack is up and nothing in it has failed |
-| red | a process has failed, or a container's healthcheck is failing |
-| grey | no stack is running |
-
-Checked in that order, so a real fault always outranks idleness.
-
-Red means *failed*, not *not ready yet*. A process still working through its
-readiness probe stays green, because a stack with a ten-second probe delay
-would otherwise flash red on every healthy launch — and a colour that cries
-wolf is a colour you stop reading. The statuses that count as failure are
-`Error`, `Failed`, `Restarting` and `Skipped`.
-
-Idle is judged on stacks alone, never on containers. Leftover containers — an
-observability stack that came back with Docker on login, say — leave the icon
-grey rather than green, because "all is well" would be a lie when no stack is
-actually running. They are still listed in the menu.
-
-Per process you get restart / start / stop and streaming logs in a Terminal
-window. Per container: logs, restart, stop, and one-click links to any port the
-plugin recognises as a browsable web UI (Grafana, Prometheus, Jaeger, Alloy).
-Containers that don't belong to a configured project are grouped under
-"Other containers" rather than hidden.
+Process status remains a direct read from the configured Process Compose REST
+API. SwiftBar does not start a shell or run mise during its five-second status
+refresh. Docker discovery and Docker container controls remain independent of
+mise.
 
 ## Requirements
 
-- macOS with [SwiftBar](https://github.com/swiftbar/SwiftBar) (`brew install --cask swiftbar`)
-- `python3` (system Python is fine — no third-party packages)
-- `process-compose` on your PATH, for the stack controls
-- `docker` — optional; container sections are skipped when the daemon is unreachable
+- macOS with [SwiftBar](https://github.com/swiftbar/SwiftBar)
+- system `python3`; the plugin uses no third-party Python packages
+- mise installed at `~/.local/bin/mise`, or an absolute `mise.bin` path in the
+  machine-owned configuration
+- each controlled repository contains a trusted `mise.toml`, a current
+  `mise.lock`, installed locked tools, and repository-owned lifecycle commands
+- Docker is optional; the plugin uses `DEVSTACKS_DOCKER_BIN`, the current
+  non-interactive `PATH`, or the Docker Desktop application binary, in that
+  order. Container sections are skipped when Docker is unavailable.
+
+The plugin never runs `mise install`, changes a lockfile, or downloads tools.
+Bootstrap and trust are explicit operator steps in the target repository.
 
 ## Install
 
@@ -49,96 +36,148 @@ cd swiftbar-devstacks
 ./install.sh
 ```
 
-`install.sh` symlinks the plugin into your SwiftBar plugin folder, so
-`git pull` updates it in place. It also seeds `~/.config/devstacks/projects.json`
-from the example on first run.
+`install.sh` links the plugin into the SwiftBar plugin directory and seeds
+`~/.config/devstacks/projects.json` only when that file does not exist.
 
-Then edit your projects:
+## Configuration schema
 
-```bash
-open -t ~/.config/devstacks/projects.json
+Configuration version 2 is an object with global mise settings and project
+entries. Lifecycle commands are argument arrays. They are not shell strings.
+
+```json
+{
+  "version": 2,
+  "mise": {
+    "bin": "/absolute/path/to/mise"
+  },
+  "docker": {
+    "bin": "/absolute/path/to/docker"
+  },
+  "projects": [
+    {
+      "name": "myapp",
+      "dir": "/Users/you/Projects/myapp/myapp-ops",
+      "port": 8099,
+      "toolchain": "mise",
+      "commands": {
+        "up": ["make", "start"],
+        "restart": ["make", "restart-stack"],
+        "down": ["make", "stop"]
+      },
+      "compose": ["myapp", "myapp-native-observability"],
+      "links": [
+        {"label": "App", "url": "http://localhost:3001"}
+      ]
+    }
+  ]
+}
 ```
-
-(or use the "Edit projects…" item at the bottom of the menu).
-
-## Configuration
-
-`~/.config/devstacks/projects.json` is a list of project objects. This file is
-personal — it holds your local paths — and is deliberately kept outside the repo.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `name` | yes | Display name, and the prefix used to claim unlabeled containers |
-| `port` | yes | The project's process-compose REST port (`PC_PORT_NUM`) |
-| `dir` | no | Working directory for the start/restart commands, and for "Open folder" |
-| `up` | no | Command that brings the stack up (default `make native-up`) |
-| `compose` | no | Docker Compose project labels belonging to this project |
-| `path` | no | Extra `PATH` directories for this project's commands, `~` allowed |
-| `links` | no | `{label, url}` items listed under the "Open" submenu |
+| `version` | yes | Must be `2` for managed controls. |
+| `mise.bin` | no | Absolute mise executable. Default: `~/.local/bin/mise`. |
+| `docker.bin` | no | Absolute Docker executable. Default: environment, current `PATH`, then Docker Desktop. |
+| `name` | yes | Stable display name and action identifier. |
+| `dir` | yes | Absolute repository directory containing `mise.toml` and `mise.lock`. |
+| `port` | yes | Loopback Process Compose REST port. |
+| `toolchain` | yes | Must be `mise` to enable controls. |
+| `commands.up` | yes | Repository-owned stack start command as an argument array. |
+| `commands.restart` | yes | Repository-owned stack restart command as an argument array. |
+| `commands.down` | yes | Repository-owned stack stop command as an argument array. |
+| `compose` | no | Docker Compose project labels owned by this project. |
+| `links` | no | Menu links with `label` and `url`. |
 
-### About `path`
+Do not add per-project `path` entries. They are a second tool-version authority,
+and version 2 disables controls when one is present.
 
-SwiftBar hands plugins a minimal `PATH` — no Homebrew, and none of the per-user
-bin directories. The plugin prepends a generous default set (including
-`~/.local/bin`, where `uv` and `pipx` install) and keeps whatever the login
-shell already had.
+See [`projects.example.json`](projects.example.json) for a complete generic
+example.
 
-That is not always enough. If your shell pins a specific toolchain — a
-Homebrew versioned formula like `node@22`, a `PNPM_HOME`, a version-manager
-shim directory — the menu bar will not see it, and your stack will start with
-different tool versions than your terminal gives it. List those directories in
-`path` so the two environments match.
+## Repository onboarding and rollout
 
-The symptom of a missing directory is a process that dies immediately with
-**exit code 127** and restart-loops, while everything that depends on it is
-reported as `Skipped`.
+Migrate one project atomically:
 
-See [`projects.example.json`](projects.example.json).
+1. Commit and verify the repository's `mise.toml`, `mise.lock`, Process Compose
+   configuration, and lifecycle wrappers.
+2. Bootstrap and trust the repository outside SwiftBar. Confirm
+   `mise which --locked -C <dir> process-compose` succeeds.
+3. Back up the machine-owned `projects.json` file.
+4. Convert only that project to the version 2 fields. Remove its old `up` shell
+   string and runtime-specific `path` entries.
+5. Refresh SwiftBar and accept start, process restart, process stop/start, logs,
+   TUI, stack restart, stack stop, and recovery from a failed start.
+6. Confirm the Process Compose executable and version match the repository lock.
+7. Keep the backup until the project has passed acceptance.
+
+During the bounded transition, an old list-style version 1 configuration still
+shows REST and Docker status. It shows a migration warning and disables all
+project controls. In a version 2 file, an entry without `toolchain: "mise"` is
+also status-only. This avoids a silent fallback to global tools while other
+repositories finish migration.
+
+## Rollback
+
+1. Stop the affected stack through its repository-owned command.
+2. Restore the backed-up machine configuration and the previously accepted
+   plugin revision together.
+3. Refresh SwiftBar.
+4. Keep the repository toolchain files; rollback must not reintroduce global
+   runtime selection into a migrated repository.
+
+Do not restore only the old configuration after installing version 3 controls.
+The old config remains status-only by design.
+
+## Error diagnosis
+
+Controls fail closed. The menu reports a specific error when the project is not
+migrated, its directory or mise files are missing, mise is unavailable, the lock
+cannot resolve Process Compose, or an action exits unsuccessfully.
+
+1. Confirm the configured `dir` is the intended repository.
+2. Run `mise which --locked -C <dir> process-compose` in a terminal.
+3. Run the repository's documented bootstrap command if a locked tool is not
+   installed. SwiftBar will not install it.
+4. Refresh SwiftBar after correcting the repository or machine configuration.
+5. Inspect `~/.config/devstacks/action-errors.json` for the last bounded action
+   failure. It contains no command output and is mode `0600`.
+
+For isolated source acceptance, `DEVSTACKS_CONFIG` and
+`DEVSTACKS_ACTION_ERRORS` can point one plugin invocation at temporary files.
+SwiftBar does not set these variables during normal use.
+
+A stopped or starting stack is not itself an error. Red means a process failed,
+restarted, or was skipped, or a container health check is failing.
+
+## Actions and isolation
+
+- Stack start, restart, and stop use only the configured lifecycle arrays.
+- Process start, stop, restart, logs, and TUI use the target repository's locked
+  Process Compose executable and configured REST port.
+- Arguments are passed as arrays. Repository paths and process names are not
+  interpolated into a project shell command.
+- Network and subprocess reads are bounded. Status refresh does not run mise.
+- Docker uses its resolved executable and remains available for unmigrated or
+  stopped projects.
 
 ## Menu bar icon style
 
-`ICON_STYLE` near the top of the plugin picks how the icon is drawn:
+`ICON_STYLE` near the top of the plugin selects the icon:
 
-| Value | Looks like | Colour |
+| Value | Appearance | Colour |
 | --- | --- | --- |
-| `stack` (default) | a layered stack, drawn by the plugin | yes |
-| `text` | a small square glyph | yes |
-| `emoji` | a coloured dot | yes |
-| `symbol` | an SF Symbol via `sfcolor` | not on every build |
+| `stack` (default) | Layered stack drawn by the plugin | yes |
+| `text` | Small square glyph | yes |
+| `emoji` | Coloured dot | yes |
+| `symbol` | SF Symbol through `sfcolor` | depends on SwiftBar/macOS |
 
-The default icon is Apple's own `square.stack.3d.up.fill`, captured once as an
-alpha mask and recoloured per state, then handed to SwiftBar as a base64 PNG. A
-supplied image is not a template image, so macOS does not repaint it to match
-the menu bar — which is how it keeps both the stack shape and the colour.
-
-It is 32x32 pixels written at **144 DPI**, so it loads as a 16x16 *point* image:
-menu bar sized, and crisp on retina. The DPI is not cosmetic — written at the
-default 72, the same pixels load as a 32 point image and tower over the bar.
-
-`symbol` is what this plugin originally shipped with. On macOS 26 with SwiftBar
-2.0.1 the `sfcolor` tint is discarded and the symbol renders as a monochrome
-template image, identical in every state — which looks exactly like a plugin
-that has stopped updating. Keep it only if you have confirmed `sfcolor` works
-on your machine.
-
-To use a different symbol, re-capture `ICON_MASK`: render any SF Symbol to a
-32x32 bitmap, take its alpha channel, and store it zlib-compressed and
-base64-encoded.
+The default is a 32-by-32 pixel alpha mask written at 144 DPI. macOS renders it
+as a crisp 16-point menu-bar image without replacing its state colour.
 
 ## Refresh interval
 
-The `5s` in `devstacks.5s.py` is SwiftBar's refresh interval. To poll less
-often, rename the file (and the symlink) to e.g. `devstacks.30s.py`.
-
-## Notes
-
-- SwiftBar runs plugins with a minimal PATH, so the plugin exports a Homebrew-aware
-  PATH into every action it fires.
-- The Docker binary is resolved at runtime rather than hardcoded, so switching
-  between Docker Desktop, OrbStack and Colima doesn't silently empty the
-  container list.
-- `docker ps` is called with a timeout — a wedged Docker daemon must not freeze
-  the menu bar.
+The `5s` in `devstacks.5s.py` is SwiftBar's refresh interval. Rename both the
+file and symlink to change it.
 
 ## License
 

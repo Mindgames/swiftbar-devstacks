@@ -1,49 +1,48 @@
 #!/usr/bin/env python3
 
 # <bitbar.title>Dev Stacks</bitbar.title>
-# <bitbar.version>2.0</bitbar.version>
+# <bitbar.version>3.0</bitbar.version>
 # <bitbar.author>Mathias Asberg</bitbar.author>
 # <bitbar.author.github>Mindgames</bitbar.author.github>
 # <bitbar.desc>Start, stop and monitor process-compose dev stacks and their containers.</bitbar.desc>
-# <bitbar.dependencies>python3,process-compose,docker</bitbar.dependencies>
+# <bitbar.dependencies>python3,mise,docker</bitbar.dependencies>
 #
 # Reads ~/.config/devstacks/projects.json. Each project's native processes come
 # from its process-compose REST API; its containers are matched by Docker
 # Compose project label. Adding a project is a config edit, not a code edit.
 #
-#   [{"name": "lookprep", "dir": "...", "port": 8099,
-#     "up": "make native-up",
-#     "compose": ["lookprep", "lookprep-native-observability"],
-#     "links": [{"label": "App", "url": "http://localhost:3001"}]}]
+#   {"version": 2, "projects": [{"name": "myapp", "dir": "...",
+#     "port": 8099, "toolchain": "mise",
+#     "commands": {"up": ["make", "start"],
+#                  "restart": ["make", "restart-stack"],
+#                  "down": ["make", "stop"]}}]}
 
 import base64
 import json
 import os
 import re
 import shlex
+import shutil
 import struct
 import subprocess
+import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 import zlib
 
-CONFIG = os.path.expanduser("~/.config/devstacks/projects.json")
-
-# SwiftBar runs plugins with a minimal PATH: no Homebrew, and none of the
-# per-user bin directories where tools like uv and pipx install themselves.
-# A tool missing from here does not fail visibly — the process it belongs to
-# dies with exit 127 and restart-loops — so this list is deliberately generous,
-# and a project can add its own directories via the "path" config key.
-BIN_PATH = ":".join([
-    os.path.expanduser("~/.local/bin"),
-    "/opt/homebrew/bin",
-    "/opt/homebrew/sbin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-])
+CONFIG = os.path.expanduser(
+    os.environ.get("DEVSTACKS_CONFIG", "~/.config/devstacks/projects.json")
+)
+ACTION_ERRORS = os.path.expanduser(
+    os.environ.get("DEVSTACKS_ACTION_ERRORS", "~/.config/devstacks/action-errors.json")
+)
+CONFIG_VERSION = 2
+PLUGIN_PATH = os.path.realpath(__file__)
+MISE_CANDIDATES = (
+    os.path.expanduser("~/.local/bin/mise"),
+)
 
 GREEN = "#3fb950"
 RED = "#f85149"
@@ -154,17 +153,30 @@ KNOWN_PORTS = {
 }
 
 
-def _docker_binary():
-    """Docker moves with the runtime — Docker Desktop installs to /usr/local/bin,
-    OrbStack and Colima to Homebrew. Resolve rather than hardcode, so switching
-    runtimes does not silently empty the container listing."""
-    for candidate in ("/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"):
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return "docker"
-
-
-DOCKER = _docker_binary()
+def resolve_docker(settings=None):
+    """Resolve Docker independently without adding a package-manager PATH."""
+    configured = settings.get("bin") if isinstance(settings, dict) else None
+    if configured is not None and not isinstance(configured, str):
+        return None
+    if configured:
+        configured = os.path.expanduser(configured)
+        if not os.path.isabs(configured):
+            return None
+    candidates = (
+        (configured,)
+        if configured
+        else (
+            os.environ.get("DEVSTACKS_DOCKER_BIN"),
+            shutil.which("docker"),
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+        )
+    )
+    for candidate in candidates:
+        candidate = os.path.expanduser(candidate) if candidate else None
+        if (candidate and os.path.isabs(candidate) and os.path.isfile(candidate)
+                and os.access(candidate, os.X_OK)):
+            return os.path.realpath(candidate)
+    return None
 
 
 def api(port, path, timeout=1.5):
@@ -183,22 +195,275 @@ def processes(port):
     return rows if isinstance(rows, list) else None
 
 
-def action(command, cwd=None, terminal=False, extra_path=()):
-    """Render SwiftBar params that run `command` through a login shell.
-
-    PATH is *prepended*, never replaced. Replacing it silently drops whatever
-    the login shell set up — version-manager shims especially — and the damage
-    only shows up later as a child process exiting 127.
-    """
-    search = ":".join([*extra_path, BIN_PATH])
-    full = f'export PATH={shlex.quote(search)}:"$PATH"; '
-    if cwd:
-        full += f"cd {shlex.quote(cwd)} && "
-    full += command
+def shell_action(command, terminal=False):
+    """Render an independent Docker action with an already-resolved binary."""
     return (
-        f"shell=/bin/bash param0=-lc param1={shlex.quote(full)} "
+        f"shell=/bin/bash param0=-lc param1={shlex.quote(command)} "
         f"terminal={'true' if terminal else 'false'} refresh=true"
     )
+
+
+def load_config(path=None):
+    """Load the versioned config while recognizing the bounded v1 transition."""
+    path = path or CONFIG
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return 0, {}, [], f"Cannot read {path}: {exc.__class__.__name__}"
+
+    if isinstance(payload, list):
+        return 1, {"mise": {}, "docker": {}}, payload, (
+            "Configuration v1 is status-only; migrate to version 2"
+        )
+    if not isinstance(payload, dict):
+        return 0, {}, [], "Configuration root must be an object"
+
+    version = payload.get("version")
+    projects = payload.get("projects")
+    mise_settings = payload.get("mise") or {}
+    docker_settings = payload.get("docker") or {}
+    settings = {"mise": mise_settings, "docker": docker_settings}
+    if version != CONFIG_VERSION:
+        return version or 0, settings, projects if isinstance(projects, list) else [], (
+            f"Unsupported configuration version: {version!r}; expected {CONFIG_VERSION}"
+        )
+    if not isinstance(projects, list):
+        return version, settings, [], "Configuration projects must be a list"
+    if not isinstance(mise_settings, dict):
+        return version, settings, projects, "Configuration mise settings must be an object"
+    if not isinstance(docker_settings, dict):
+        return version, settings, projects, "Configuration Docker settings must be an object"
+    return version, settings, projects, None
+
+
+def resolve_mise(settings):
+    configured = settings.get("bin") if isinstance(settings, dict) else None
+    if configured is not None and not isinstance(configured, str):
+        return None
+    candidates = (os.path.expanduser(configured),) if configured else MISE_CANDIDATES
+    for candidate in candidates:
+        if (candidate and os.path.isabs(candidate) and os.path.isfile(candidate)
+                and os.access(candidate, os.X_OK)):
+            return os.path.realpath(candidate)
+    return None
+
+
+def _valid_command(value):
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(part, str) and part and "\x00" not in part for part in value))
+
+
+def project_static_error(project, version, mise_bin):
+    if version != CONFIG_VERSION:
+        return f"configuration version {CONFIG_VERSION} is required for controls"
+    if not isinstance(project, dict):
+        return "project entry must be an object"
+    name = project.get("name")
+    directory = project.get("dir")
+    port = project.get("port")
+    if not isinstance(name, str) or not name.strip():
+        return "project name is missing"
+    if not isinstance(directory, str) or not os.path.isabs(directory):
+        return "project directory must be absolute"
+    if not os.path.isdir(directory):
+        return "project directory is missing"
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        return "Process Compose port is invalid"
+    if project.get("toolchain") != "mise":
+        return "project is status-only until toolchain is set to mise"
+    if project.get("path"):
+        return "remove the obsolete per-project path override"
+    if not mise_bin:
+        return "mise executable is missing"
+    if not os.path.isfile(os.path.join(directory, "mise.toml")):
+        return "mise.toml is missing"
+    if not os.path.isfile(os.path.join(directory, "mise.lock")):
+        return "mise.lock is missing"
+    commands = project.get("commands")
+    if not isinstance(commands, dict):
+        return "lifecycle commands are missing"
+    for name in ("up", "restart", "down"):
+        if not _valid_command(commands.get(name)):
+            return f"lifecycle command {name} must be a non-empty argument list"
+    return None
+
+
+def menu_text(value):
+    """Keep configuration and subprocess text inside one SwiftBar label."""
+    return re.sub(r"[|\r\n]+", " ", str(value)).strip()
+
+
+def swiftbar_action(project_name, operation, *arguments, terminal=False):
+    params = [PLUGIN_PATH, "--run-action", project_name, operation, *arguments]
+    rendered = " ".join(
+        f"param{index}={shlex.quote(value)}" for index, value in enumerate(params)
+    )
+    return (
+        f"shell=/usr/bin/python3 {rendered} "
+        f"terminal={'true' if terminal else 'false'} refresh=true"
+    )
+
+
+def process_compose_command(project, operation, *arguments):
+    return [
+        "process-compose",
+        "--address", "127.0.0.1",
+        "--port", str(project["port"]),
+        *operation.split(),
+        *arguments,
+    ]
+
+
+def mise_exec_command(mise_bin, project, command):
+    return [mise_bin, "exec", "--locked", "-C", project["dir"], "--", *command]
+
+
+def _read_action_errors(path=None):
+    path = path or ACTION_ERRORS
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_action_errors(errors, path=None):
+    path = path or ACTION_ERRORS
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".action-errors.", dir=directory, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(errors, handle, sort_keys=True)
+            handle.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _record_action_error(project_name, message):
+    try:
+        errors = _read_action_errors()
+        errors[project_name] = {
+            "message": re.sub(r"[\r\n]+", " ", str(message))[:240],
+            "recorded_at": int(time.time()),
+        }
+        _write_action_errors(errors)
+    except OSError as exc:
+        print(
+            f"{project_name}: cannot persist action error: {exc.__class__.__name__}",
+            file=sys.stderr,
+        )
+
+
+def _clear_action_error(project_name):
+    try:
+        errors = _read_action_errors()
+        if project_name in errors:
+            del errors[project_name]
+            _write_action_errors(errors)
+    except OSError as exc:
+        print(
+            f"{project_name}: cannot clear action error: {exc.__class__.__name__}",
+            file=sys.stderr,
+        )
+
+
+def _mise_preflight(mise_bin, project):
+    environment = os.environ.copy()
+    environment["MISE_LOCKED"] = "1"
+    try:
+        result = subprocess.run(
+            [mise_bin, "which", "--locked", "-C", project["dir"], "process-compose"],
+            capture_output=True, text=True, timeout=8, env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"mise preflight failed: {exc.__class__.__name__}"
+    executable = result.stdout.strip()
+    if result.returncode != 0 or not os.path.isabs(executable) or not os.access(executable, os.X_OK):
+        detail = result.stderr.strip().splitlines()
+        return None, detail[-1][:180] if detail else "locked process-compose is unavailable"
+    return executable, None
+
+
+def run_action(project_name, operation, arguments=(), config_path=None):
+    version, settings, projects, config_error = load_config(config_path)
+    matches = [
+        item for item in projects
+        if isinstance(item, dict) and item.get("name") == project_name
+    ]
+    project = matches[0] if len(matches) == 1 else None
+    mise_bin = resolve_mise(settings["mise"])
+    duplicate_error = "project name is duplicated" if len(matches) > 1 else None
+    error = config_error or duplicate_error or ("project is not configured" if project is None else None)
+    if error is None:
+        error = project_static_error(project, version, mise_bin)
+    if error is None:
+        _, error = _mise_preflight(mise_bin, project)
+    if error:
+        _record_action_error(project_name, error)
+        print(f"{project_name}: {error}", file=sys.stderr)
+        return 2
+
+    commands = project["commands"]
+    if operation in ("up", "restart", "down"):
+        command = commands[operation]
+        interactive = False
+    elif operation in ("process-start", "process-stop", "process-restart") and len(arguments) == 1:
+        command = process_compose_command(
+            project,
+            f"process {operation.removeprefix('process-')}",
+            "--",
+            arguments[0],
+        )
+        interactive = False
+    elif operation == "logs" and len(arguments) == 1:
+        command = process_compose_command(
+            project,
+            "process logs",
+            "--follow",
+            "--tail",
+            "200",
+            "--",
+            arguments[0],
+        )
+        interactive = True
+    elif operation == "tui" and not arguments:
+        command = process_compose_command(project, "attach")
+        interactive = True
+    else:
+        error = "unsupported or malformed action"
+        _record_action_error(project_name, error)
+        print(f"{project_name}: {error}", file=sys.stderr)
+        return 2
+
+    invocation = mise_exec_command(mise_bin, project, command)
+    environment = os.environ.copy()
+    environment["MISE_LOCKED"] = "1"
+    if interactive:
+        _clear_action_error(project_name)
+        try:
+            os.execvpe(invocation[0], invocation, environment)
+        except OSError as exc:
+            message = f"terminal action failed: {exc.__class__.__name__}"
+            _record_action_error(project_name, message)
+            print(f"{project_name}: {message}", file=sys.stderr)
+            return 1
+        return 0
+    try:
+        result = subprocess.run(invocation, timeout=180, env=environment)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _record_action_error(project_name, f"action failed: {exc.__class__.__name__}")
+        return 1
+    if result.returncode != 0:
+        _record_action_error(project_name, f"action exited with status {result.returncode}")
+    else:
+        _clear_action_error(project_name)
+    return result.returncode
 
 
 # A process with no readiness probe reports "-", which means "not measured",
@@ -241,12 +506,15 @@ def proc_colour(proc):
     return DIM
 
 
-def containers():
+def containers(docker_bin=None):
     """Running containers as dicts. Docker Desktop can hang while the VM starts
     or stops, so this is bounded — a wedged daemon must not freeze the menu bar."""
     fmt = '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}'
+    docker_bin = docker_bin or resolve_docker()
+    if not docker_bin:
+        return None
     try:
-        out = subprocess.run([DOCKER, "ps", "--format", fmt],
+        out = subprocess.run([docker_bin, "ps", "--format", fmt],
                              capture_output=True, text=True, timeout=4)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -309,7 +577,7 @@ def owns(project, container):
     return False
 
 
-def render_container(container, depth):
+def render_container(container, depth, docker_bin=None):
     """Render one container and its actions, nested at `depth` dashes."""
     d = "-" * depth
     status = container["status"]
@@ -334,23 +602,40 @@ def render_container(container, depth):
         print(f"{d}--Ports: {shown} | {FONT} color={DIM}")
 
     name = shlex.quote(container["name"])
-    print(f"{d}--Logs (Terminal) | {action(f'docker logs -f --tail 200 {name}', terminal=True)}")
-    print(f"{d}--Restart | {action(f'docker restart {name}')}")
-    print(f"{d}--Stop | {action(f'docker stop {name}')} color={RED}")
+    docker = shlex.quote(docker_bin or resolve_docker() or "docker")
+    print(f"{d}--Logs (Terminal) | {shell_action(f'{docker} logs -f --tail 200 {name}', terminal=True)}")
+    print(f"{d}--Restart | {shell_action(f'{docker} restart {name}')}")
+    print(f"{d}--Stop | {shell_action(f'{docker} stop {name}')} color={RED}")
 
 
-def main():
-    try:
-        with open(CONFIG) as handle:
-            projects = json.load(handle)
-    except (OSError, ValueError):
-        print("dev ⚠")
-        print("---")
-        print(f"Cannot read {CONFIG} | color={RED}")
-        return
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        if len(argv) >= 3 and argv[0] == "--run-action":
+            raise SystemExit(run_action(argv[1], argv[2], tuple(argv[3:])))
+        print("Unsupported plugin invocation", file=sys.stderr)
+        raise SystemExit(2)
+
+    version, settings, configured_projects, config_error = load_config()
+    projects = [
+        project for project in configured_projects
+        if isinstance(project, dict)
+        and isinstance(project.get("name"), str)
+        and isinstance(project.get("port"), int)
+        and not isinstance(project.get("port"), bool)
+        and 1 <= project["port"] <= 65535
+    ]
+    if len(projects) != len(configured_projects):
+        config_error = config_error or "Each project needs a name and a valid REST port"
+    names = [project["name"] for project in projects]
+    if len(names) != len(set(names)):
+        config_error = config_error or "Project names must be unique"
+    mise_bin = resolve_mise(settings["mise"])
+    docker_bin = resolve_docker(settings["docker"])
+    action_errors = _read_action_errors()
 
     states = [(project, processes(project.get("port"))) for project in projects]
-    docker_rows = containers()
+    docker_rows = containers(docker_bin)
 
     # Assign each container to at most one project; whatever is left over is
     # genuinely unrelated to a configured stack.
@@ -414,30 +699,38 @@ def main():
         bits.append(f"{len(docker_rows)} {'container' if len(docker_rows) == 1 else 'containers'}")
     print(f"{' · '.join(bits) if bits else 'Nothing running'} | {FONT} "
           f"color={RED if problem else (GREEN if running else DIM)}")
+    if config_error:
+        print(f"Configuration: {menu_text(config_error)} | {FONT} color={RED}")
     print("---")
 
     # ---- one section per project --------------------------------------------
     for project, rows in states:
         name = project["name"]
+        display_name = menu_text(name)
         port = project["port"]
         directory = project.get("dir")
-        up_command = project.get("up", "make native-up")
         mine = owned.get(name, [])
-        extra = [os.path.expanduser(p) for p in (project.get("path") or [])]
+        control_error = config_error or project_static_error(project, version, mise_bin)
+        last_error = action_errors.get(name)
 
         if rows is None:
             suffix = f" · {len(mine)} containers" if mine else ""
-            print(f"{name} — stopped{suffix} | {FONT} color={DIM}")
-            print(f"--Start stack | {action(up_command, directory, extra_path=extra)} color={GREEN}")
+            print(f"{display_name} — stopped{suffix} | {FONT} color={DIM}")
+            if control_error:
+                print(f"--Controls disabled: {menu_text(control_error)} | {FONT} color={RED}")
+            else:
+                print(f"--Start stack | {swiftbar_action(name, 'up')} color={GREEN}")
+            if isinstance(last_error, dict) and last_error.get("message"):
+                print(f"--Last action error: {menu_text(last_error['message'])} | {FONT} color={RED}")
             if directory:
                 print(f"--Open folder | shell=/usr/bin/open param0={shlex.quote(directory)} terminal=false")
             for container in sorted(mine, key=lambda c: c["name"]):
-                render_container(container, 2)
+                render_container(container, 2, docker_bin)
             print("---")
             continue
 
         healthy = sum(1 for p in rows if is_healthy(p))
-        headline = f"{name} — {healthy}/{len(rows)} healthy"
+        headline = f"{display_name} — {healthy}/{len(rows)} healthy"
         if mine:
             headline += f" · {len(mine)} {'container' if len(mine) == 1 else 'containers'}"
         print(f"{headline} | {FONT}")
@@ -455,18 +748,18 @@ def main():
                 label += f"  ↻{restarts}"
             print(f"--{label} | {FONT} color={proc_colour(proc)}")
 
-            pc = f"PC_PORT_NUM={port} process-compose process"
-            print(f"----Restart | {action(f'{pc} restart {shlex.quote(pname)}', extra_path=extra)}")
-            if status.lower() == "running":
-                print(f"----Stop | {action(f'{pc} stop {shlex.quote(pname)}', extra_path=extra)} color={RED}")
-            else:
-                print(f"----Start | {action(f'{pc} start {shlex.quote(pname)}', extra_path=extra)} color={GREEN}")
-            print(f"----Logs (Terminal) | "
-                  f"{action(f'{pc} logs {shlex.quote(pname)} -f -n 200', terminal=True, extra_path=extra)}")
+            if not control_error:
+                print(f"----Restart | {swiftbar_action(name, 'process-restart', pname)}")
+                if status.lower() == "running":
+                    print(f"----Stop | {swiftbar_action(name, 'process-stop', pname)} color={RED}")
+                else:
+                    print(f"----Start | {swiftbar_action(name, 'process-start', pname)} color={GREEN}")
+                print(f"----Logs (Terminal) | "
+                      f"{swiftbar_action(name, 'logs', pname, terminal=True)}")
 
         # Containers belonging to this project, alongside its processes.
         for container in sorted(mine, key=lambda c: c["name"]):
-            render_container(container, 2)
+            render_container(container, 2, docker_bin)
 
         links = project.get("links") or ([{"label": "Open", "url": project["open"]}]
                                          if project.get("open") else [])
@@ -475,12 +768,14 @@ def main():
             for link in links:
                 print(f"----{link['label']}  —  {link['url']} | href={link['url']}")
 
-        print(f"--Dashboard (TUI) | "
-              f"{action(f'PC_PORT_NUM={port} process-compose attach', terminal=True, extra_path=extra)}")
-        print(f"--Restart stack | "
-              f"{action(f'PC_PORT_NUM={port} process-compose down && {up_command}', directory, extra_path=extra)}")
-        print(f"--Stop stack | "
-              f"{action(f'PC_PORT_NUM={port} process-compose down', extra_path=extra)} color={RED}")
+        if control_error:
+            print(f"--Controls disabled: {menu_text(control_error)} | {FONT} color={RED}")
+        else:
+            print(f"--Dashboard (TUI) | {swiftbar_action(name, 'tui', terminal=True)}")
+            print(f"--Restart stack | {swiftbar_action(name, 'restart')}")
+            print(f"--Stop stack | {swiftbar_action(name, 'down')} color={RED}")
+        if isinstance(last_error, dict) and last_error.get("message"):
+            print(f"--Last action error: {menu_text(last_error['message'])} | {FONT} color={RED}")
         print("---")
 
     # ---- anything not belonging to a configured project ---------------------
@@ -489,7 +784,7 @@ def main():
     elif unclaimed:
         print(f"Other containers — {len(unclaimed)} | {FONT} color={DIM}")
         for container in sorted(unclaimed, key=lambda c: c["name"]):
-            render_container(container, 2)
+            render_container(container, 2, docker_bin)
 
     print("---")
     print(f"Refresh | refresh=true color={DIM}")

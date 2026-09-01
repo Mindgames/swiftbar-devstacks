@@ -1,25 +1,24 @@
-[
-  {
-    "name": "myapp",
-    "dir": "/Users/you/Projects/myapp/myapp-ops",
-    "port": 8099,
-    "up": "make native-up",
-    "compose": ["myapp", "myapp-native-observability"],
-    "path": ["/opt/homebrew/opt/node@22/bin", "~/Library/pnpm"],
-    "links": [
-      { "label": "App",     "url": "http://localhost:3001" },
-      { "label": "API docs", "url": "http://localhost:8001/docs" },
-      { "label": "Grafana", "url": "http://localhost:3301" }
-    ]
-  },
-  {
-    "name": "otherapp",
-    "dir": "/Users/you/Projects/otherapp",
-    "port": 8098,
-    "up": "make native-up",
-    "compose": ["otherapp"],
-    "links": [
-      { "label": "Website", "url": "http://localhost:3000" }
-    ]
-  }
-]
+{
+  "version": 2,
+  "mise": {},
+  "docker": {},
+  "projects": [
+    {
+      "name": "myapp",
+      "dir": "/Users/you/Projects/myapp/myapp-ops",
+      "port": 8099,
+      "toolchain": "mise",
+      "commands": {
+        "up": ["make", "start"],
+        "restart": ["make", "restart-stack"],
+        "down": ["make", "stop"]
+      },
+      "compose": ["myapp", "myapp-native-observability"],
+      "links": [
+        {"label": "App", "url": "http://localhost:3001"},
+        {"label": "API docs", "url": "http://localhost:8001/docs"},
+        {"label": "Grafana", "url": "http://localhost:3301"}
+      ]
+    }
+  ]
+}
