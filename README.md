@@ -6,7 +6,8 @@ development stacks and their Docker containers from the macOS menu bar.
 Project controls run through the toolchain pinned by each repository. The
 plugin does not select or install Node, Python, pnpm, uv, or Process Compose.
 It uses `mise exec --locked -C <project-dir> -- <command>` for every managed
-action.
+action. Before controls are enabled, it isolates mise discovery and verifies
+that the repository `mise.toml` is the only loaded configuration.
 
 Process status remains a direct read from the configured Process Compose REST
 API. SwiftBar does not start a shell or run mise during its five-second status
@@ -16,11 +17,13 @@ mise.
 ## Requirements
 
 - macOS with [SwiftBar](https://github.com/swiftbar/SwiftBar)
-- system `python3`; the plugin uses no third-party Python packages
+- system Python 3.8 or later; the plugin uses no third-party Python packages
 - mise installed at `~/.local/bin/mise`, or an absolute `mise.bin` path in the
   machine-owned configuration
 - each controlled repository contains a trusted `mise.toml`, a current
-  `mise.lock`, installed locked tools, and repository-owned lifecycle commands
+  `mise.lock`, installed locked tools, and repository-owned lifecycle commands.
+  Additional parent, global, local, environment-specific, or legacy mise
+  configuration is excluded from managed actions.
 - Docker is optional; the plugin uses `DEVSTACKS_DOCKER_BIN`, the current
   non-interactive `PATH`, or the Docker Desktop application binary, in that
   order. Container sections are skipped when Docker is unavailable.
@@ -140,7 +143,8 @@ cannot resolve Process Compose, or an action exits unsuccessfully.
    installed. SwiftBar will not install it.
 4. Refresh SwiftBar after correcting the repository or machine configuration.
 5. Inspect `~/.config/devstacks/action-errors.json` for the last bounded action
-   failure. It contains no command output and is mode `0600`.
+   failure. It contains no command output and is mode `0600`. A mode `0600`
+   lock sidecar serializes overlapping action updates.
 
 For isolated source acceptance, `DEVSTACKS_CONFIG` and
 `DEVSTACKS_ACTION_ERRORS` can point one plugin invocation at temporary files.
@@ -154,8 +158,12 @@ restarted, or was skipped, or a container health check is failing.
 - Stack start, restart, and stop use only the configured lifecycle arrays.
 - Process start, stop, restart, logs, and TUI use the target repository's locked
   Process Compose executable and configured REST port.
+- REST status and Process Compose controls use the same explicit IPv4 loopback
+  address.
 - Arguments are passed as arrays. Repository paths and process names are not
   interpolated into a project shell command.
+- Interactive log and TUI actions retain a small wrapper process so their exit
+  status is recorded before SwiftBar refreshes.
 - Network and subprocess reads are bounded. Status refresh does not run mise.
 - Docker uses its resolved executable and remains available for unmigrated or
   stopped projects.

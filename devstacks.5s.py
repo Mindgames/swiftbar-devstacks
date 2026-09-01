@@ -18,6 +18,7 @@
 #                  "down": ["make", "stop"]}}]}
 
 import base64
+import fcntl
 import json
 import os
 import re
@@ -40,6 +41,7 @@ ACTION_ERRORS = os.path.expanduser(
 )
 CONFIG_VERSION = 2
 PLUGIN_PATH = os.path.realpath(__file__)
+PROCESS_COMPOSE_ADDRESS = "127.0.0.1"
 MISE_CANDIDATES = (
     os.path.expanduser("~/.local/bin/mise"),
 )
@@ -181,7 +183,9 @@ def resolve_docker(settings=None):
 
 def api(port, path, timeout=1.5):
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=timeout) as r:
+        with urllib.request.urlopen(
+            f"http://{PROCESS_COMPOSE_ADDRESS}:{port}{path}", timeout=timeout
+        ) as r:
             return json.loads(r.read().decode())
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
@@ -313,7 +317,7 @@ def swiftbar_action(project_name, operation, *arguments, terminal=False):
 def process_compose_command(project, operation, *arguments):
     return [
         "process-compose",
-        "--address", "127.0.0.1",
+        "--address", PROCESS_COMPOSE_ADDRESS,
         "--port", str(project["port"]),
         *operation.split(),
         *arguments,
@@ -350,14 +354,35 @@ def _write_action_errors(errors, path=None):
             os.unlink(temporary)
 
 
+def _update_action_errors(project_name, entry, path=None):
+    path = path or ACTION_ERRORS
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    lock_path = f"{path}.lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    with os.fdopen(descriptor, "r+", encoding="utf-8") as lock_handle:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        errors = _read_action_errors(path)
+        if entry is None:
+            if project_name not in errors:
+                return
+            del errors[project_name]
+        else:
+            errors[project_name] = entry
+        _write_action_errors(errors, path)
+
+
 def _record_action_error(project_name, message):
     try:
-        errors = _read_action_errors()
-        errors[project_name] = {
-            "message": re.sub(r"[\r\n]+", " ", str(message))[:240],
-            "recorded_at": int(time.time()),
-        }
-        _write_action_errors(errors)
+        _update_action_errors(
+            project_name,
+            {
+                "message": re.sub(r"[\r\n]+", " ", str(message))[:240],
+                "recorded_at": int(time.time()),
+            },
+        )
     except OSError as exc:
         print(
             f"{project_name}: cannot persist action error: {exc.__class__.__name__}",
@@ -367,10 +392,7 @@ def _record_action_error(project_name, message):
 
 def _clear_action_error(project_name):
     try:
-        errors = _read_action_errors()
-        if project_name in errors:
-            del errors[project_name]
-            _write_action_errors(errors)
+        _update_action_errors(project_name, None)
     except OSError as exc:
         print(
             f"{project_name}: cannot clear action error: {exc.__class__.__name__}",
@@ -378,15 +400,65 @@ def _clear_action_error(project_name):
         )
 
 
-def _mise_preflight(mise_bin, project):
+def _mise_environment(project):
     environment = os.environ.copy()
+    for name in (
+        "MISE_CONFIG_FILE",
+        "MISE_CONFIG_ROOT",
+        "MISE_DEFAULT_CONFIG_FILENAME",
+        "MISE_ENV",
+        "MISE_ENV_FILE",
+        "MISE_IGNORED_CONFIG_PATHS",
+        "MISE_PROJECT_ROOT",
+    ):
+        environment.pop(name, None)
+    for name in tuple(environment):
+        if name.startswith("__MISE_"):
+            environment.pop(name, None)
+
+    repository = os.path.realpath(project["dir"])
+    manifest = os.path.join(repository, "mise.toml")
     environment["MISE_LOCKED"] = "1"
+    environment["MISE_GLOBAL_CONFIG_FILE"] = manifest
+    environment["MISE_SYSTEM_CONFIG_FILE"] = manifest
+    environment["MISE_CEILING_PATHS"] = repository
+    environment["MISE_OVERRIDE_CONFIG_FILENAMES"] = "mise.toml"
+    environment["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] = ".devstacks-disabled"
+    environment["MISE_IDIOMATIC_VERSION_FILE"] = "0"
+    environment["MISE_LEGACY_VERSION_FILE"] = "0"
+    environment["MISE_AUTO_INSTALL"] = "0"
+    environment["MISE_EXEC_AUTO_INSTALL"] = "0"
+    environment["MISE_NOT_FOUND_AUTO_INSTALL"] = "0"
+    return environment
+
+
+def _mise_preflight(mise_bin, project):
+    environment = _mise_environment(project)
+    expected_manifest = os.path.realpath(os.path.join(project["dir"], "mise.toml"))
     try:
+        config_result = subprocess.run(
+            [mise_bin, "config", "ls", "--json", "-C", project["dir"]],
+            capture_output=True, text=True, timeout=8, env=environment,
+        )
+        if config_result.returncode != 0:
+            detail = config_result.stderr.strip().splitlines()
+            return None, detail[-1][:180] if detail else "mise config isolation failed"
+        config_payload = json.loads(config_result.stdout)
+        if not isinstance(config_payload, list) or not config_payload:
+            return None, "mise config isolation did not return a configuration list"
+        if any(
+            not isinstance(item, dict) or not isinstance(item.get("path"), str)
+            for item in config_payload
+        ):
+            return None, "mise config isolation returned an invalid configuration entry"
+        config_paths = {os.path.realpath(item["path"]) for item in config_payload}
+        if config_paths != {expected_manifest}:
+            return None, "mise config isolation did not select only the repository manifest"
         result = subprocess.run(
             [mise_bin, "which", "--locked", "-C", project["dir"], "process-compose"],
             capture_output=True, text=True, timeout=8, env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return None, f"mise preflight failed: {exc.__class__.__name__}"
     executable = result.stdout.strip()
     if result.returncode != 0 or not os.path.isabs(executable) or not os.access(executable, os.X_OK):
@@ -421,7 +493,7 @@ def run_action(project_name, operation, arguments=(), config_path=None):
     elif operation in ("process-start", "process-stop", "process-restart") and len(arguments) == 1:
         command = process_compose_command(
             project,
-            f"process {operation.removeprefix('process-')}",
+            f"process {operation[len('process-'):]}",
             "--",
             arguments[0],
         )
@@ -447,18 +519,27 @@ def run_action(project_name, operation, arguments=(), config_path=None):
         return 2
 
     invocation = mise_exec_command(mise_bin, project, command)
-    environment = os.environ.copy()
-    environment["MISE_LOCKED"] = "1"
+    environment = _mise_environment(project)
     if interactive:
-        _clear_action_error(project_name)
         try:
-            os.execvpe(invocation[0], invocation, environment)
+            result = subprocess.run(invocation, env=environment)
+        except KeyboardInterrupt:
+            message = "terminal action interrupted"
+            _record_action_error(project_name, message)
+            print(f"{project_name}: {message}", file=sys.stderr)
+            return 130
         except OSError as exc:
             message = f"terminal action failed: {exc.__class__.__name__}"
             _record_action_error(project_name, message)
             print(f"{project_name}: {message}", file=sys.stderr)
             return 1
-        return 0
+        if result.returncode != 0:
+            _record_action_error(
+                project_name, f"terminal action exited with status {result.returncode}"
+            )
+        else:
+            _clear_action_error(project_name)
+        return result.returncode
     try:
         result = subprocess.run(invocation, timeout=180, env=environment)
     except (OSError, subprocess.TimeoutExpired) as exc:

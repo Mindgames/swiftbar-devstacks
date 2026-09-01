@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import importlib.util
 import io
@@ -7,6 +8,7 @@ from pathlib import Path
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -52,6 +54,10 @@ if [ "${1:-}" = "which" ]; then
   printf '%s\\n' "$MISE_STUB_TOOL"
   exit 0
 fi
+if [ "${1:-}" = "config" ]; then
+  printf '%s\\n' "$MISE_STUB_CONFIG_JSON"
+  exit "${MISE_STUB_CONFIG_STATUS:-0}"
+fi
 exit "${MISE_STUB_EXEC_STATUS:-0}"
 """,
             encoding="utf-8",
@@ -86,6 +92,9 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             {
                 "PATH": "/usr/bin:/bin",
                 "MISE_STUB_LOG": str(self.log),
+                "MISE_STUB_CONFIG_JSON": json.dumps(
+                    [{"path": str(self.repository / "mise.toml"), "tools": ["process-compose"]}]
+                ),
                 "MISE_STUB_TOOL": str(self.tool),
             },
             clear=False,
@@ -109,29 +118,24 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
 
     def invoke(self, operation, arguments=(), interactive=False):
         self.log.unlink(missing_ok=True)
-        if interactive:
-            def exec_through_stub(_file, argv, environment):
-                subprocess.run(argv, check=True, env=environment)
-
-            with mock.patch.object(DEVSTACKS.os, "execvpe", side_effect=exec_through_stub):
-                result = DEVSTACKS.run_action(
-                    self.project["name"], operation, arguments, str(self.config)
-                )
-        else:
-            result = DEVSTACKS.run_action(
-                self.project["name"], operation, arguments, str(self.config)
-            )
+        result = DEVSTACKS.run_action(
+            self.project["name"], operation, arguments, str(self.config)
+        )
         self.assertEqual(result, 0)
         calls = self.calls()
         self.assertEqual(
             calls[0],
+            ["config", "ls", "--json", "-C", str(self.repository)],
+        )
+        self.assertEqual(
+            calls[1],
             [
                 "which", "--locked", "-C", str(self.repository),
                 "process-compose",
             ],
         )
-        self.assertEqual(calls[1][:5], ["exec", "--locked", "-C", str(self.repository), "--"])
-        return calls[1][5:]
+        self.assertEqual(calls[2][:5], ["exec", "--locked", "-C", str(self.repository), "--"])
+        return calls[2][5:]
 
     def test_every_supported_action_uses_locked_repository_mise_context(self):
         process_name = "-worker ; $(touch never) 'quoted'"
@@ -251,6 +255,49 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             DEVSTACKS.main([])
         self.assertIn("Last action error: stale lock: process-compose unavailable", output.getvalue())
 
+    def test_mise_environment_restricts_config_to_the_repository_manifest(self):
+        poisoned = {
+            "MISE_CONFIG_FILE": str(self.root / "other.toml"),
+            "MISE_ENV": "production",
+            "MISE_IGNORED_CONFIG_PATHS": str(self.repository / "mise.toml"),
+            "MISE_GLOBAL_CONFIG_FILE": str(self.root / "global.toml"),
+            "MISE_SYSTEM_CONFIG_FILE": str(self.root / "system.toml"),
+            "__MISE_SESSION": "ambient",
+        }
+        with mock.patch.dict(os.environ, poisoned, clear=False):
+            environment = DEVSTACKS._mise_environment(self.project)
+
+        manifest = str((self.repository / "mise.toml").resolve())
+        self.assertEqual(environment["MISE_GLOBAL_CONFIG_FILE"], manifest)
+        self.assertEqual(environment["MISE_SYSTEM_CONFIG_FILE"], manifest)
+        self.assertEqual(environment["MISE_CEILING_PATHS"], str(self.repository.resolve()))
+        self.assertEqual(environment["MISE_OVERRIDE_CONFIG_FILENAMES"], "mise.toml")
+        self.assertEqual(
+            environment["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"],
+            ".devstacks-disabled",
+        )
+        self.assertEqual(environment["MISE_LOCKED"], "1")
+        self.assertEqual(environment["MISE_EXEC_AUTO_INSTALL"], "0")
+        for name in poisoned:
+            if name not in ("MISE_GLOBAL_CONFIG_FILE", "MISE_SYSTEM_CONFIG_FILE"):
+                self.assertNotIn(name, environment)
+
+    def test_mise_preflight_rejects_any_additional_config(self):
+        leaked = json.dumps(
+            [
+                {"path": str(self.repository / "mise.toml"), "tools": ["process-compose"]},
+                {"path": str(self.root / "ambient.toml"), "tools": ["node"]},
+            ]
+        )
+        with mock.patch.dict(os.environ, {"MISE_STUB_CONFIG_JSON": leaked}, clear=False):
+            result = DEVSTACKS.run_action(
+                self.project["name"], "up", config_path=str(self.config)
+            )
+        self.assertEqual(result, 2)
+        payload = json.loads(self.errors.read_text(encoding="utf-8"))
+        self.assertIn("only the repository manifest", payload[self.project["name"]]["message"])
+        self.assertEqual(len(self.calls()), 1)
+
     def test_version_one_is_status_only(self):
         self.config.write_text(json.dumps([self.project]), encoding="utf-8")
         version, settings, projects, error = DEVSTACKS.load_config(str(self.config))
@@ -335,18 +382,76 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         with mock.patch.object(DEVSTACKS, "resolve_docker", side_effect=AssertionError):
             self.assertIsNone(DEVSTACKS.containers(None))
 
-    def test_interactive_exec_failure_is_persisted_for_the_menu(self):
-        with mock.patch.object(
-            DEVSTACKS.os,
-            "execvpe",
-            side_effect=FileNotFoundError("terminal launch failed"),
-        ):
+    def test_interactive_exit_failure_is_persisted_for_the_menu(self):
+        with mock.patch.dict(os.environ, {"MISE_STUB_EXEC_STATUS": "23"}, clear=False):
             result = DEVSTACKS.run_action(
                 self.project["name"], "logs", ("api",), str(self.config)
             )
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 23)
         payload = json.loads(self.errors.read_text(encoding="utf-8"))
-        self.assertIn("terminal action failed", payload[self.project["name"]]["message"])
+        self.assertIn("terminal action exited with status 23", payload[self.project["name"]]["message"])
+
+    def test_interactive_interrupt_is_persisted_without_a_traceback(self):
+        config_result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps([{"path": str(self.repository / "mise.toml")}]),
+            stderr="",
+        )
+        which_result = mock.Mock(returncode=0, stdout=str(self.tool), stderr="")
+        with mock.patch.object(
+            DEVSTACKS.subprocess,
+            "run",
+            side_effect=[config_result, which_result, KeyboardInterrupt],
+        ):
+            result = DEVSTACKS.run_action(
+                self.project["name"], "tui", config_path=str(self.config)
+            )
+        self.assertEqual(result, 130)
+        payload = json.loads(self.errors.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload[self.project["name"]]["message"],
+            "terminal action interrupted",
+        )
+
+    def test_action_error_updates_are_serialized_across_processes(self):
+        source = """
+import importlib.util
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location("devstacks_child", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.ACTION_ERRORS = sys.argv[2]
+original_read = module._read_action_errors
+def slow_read(path=None):
+    payload = original_read(path)
+    time.sleep(0.1)
+    return payload
+module._read_action_errors = slow_read
+module._record_action_error(sys.argv[3], "concurrent failure")
+"""
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", source, str(ROOT / "devstacks.5s.py"), str(self.errors), f"project-{index}"]
+            )
+            for index in range(4)
+        ]
+        self.assertTrue(all(process.wait(timeout=10) == 0 for process in processes))
+        payload = json.loads(self.errors.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload), {f"project-{index}" for index in range(4)})
+        self.assertEqual(stat.S_IMODE(Path(f"{self.errors}.lock").stat().st_mode), 0o600)
+
+    def test_process_status_and_controls_use_the_same_ipv4_loopback(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"data": []}'
+        with mock.patch.object(DEVSTACKS.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual(DEVSTACKS.processes(self.project["port"]), [])
+        urlopen.assert_called_once_with(
+            f"http://127.0.0.1:{self.project['port']}/processes",
+            timeout=1.5,
+        )
+        self.assertIn("127.0.0.1", DEVSTACKS.process_compose_command(self.project, "attach"))
 
     def test_action_status_survives_an_unwritable_error_store(self):
         stderr = io.StringIO()
@@ -367,9 +472,12 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
 
     def test_plugin_has_no_package_manager_path_fallback(self):
         source = (ROOT / "devstacks.5s.py").read_text(encoding="utf-8")
+        ast.parse(source, filename="devstacks.5s.py", feature_version=(3, 8))
         self.assertNotIn("/opt/homebrew", source)
         self.assertNotIn("corepack", source)
         self.assertNotIn("PNPM_HOME", source)
+        self.assertNotIn(".removeprefix(", source)
+        self.assertNotIn("execvpe", source)
 
     def test_example_uses_only_version_two_mise_contract(self):
         payload = json.loads((ROOT / "projects.example.json").read_text(encoding="utf-8"))
