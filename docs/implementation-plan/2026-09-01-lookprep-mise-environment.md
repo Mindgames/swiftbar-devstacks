@@ -2,7 +2,7 @@
 
 - Owner: SwiftBar dev-stacks
 - Date: 2026-09-01
-- Status: In progress
+- Status: Ready for merge
 
 ## Motivation
 
@@ -78,9 +78,9 @@ Goal: publish a reviewable correction without changing machine configuration.
 
 Expected output: one focused commit and PR linked to issue #1.
 
-- [-] Commit and push the verified source and plan.
-- [ ] Open a PR with the regression and integration evidence.
-- [ ] Keep the active version 1 machine config unchanged until Docker and Grais
+- [x] Commit and push the verified source and plan.
+- [x] Open a PR with the regression and integration evidence.
+- [x] Keep the active version 1 machine config unchanged until Docker and Grais
       allow the required manual acceptance.
 
 ## Validation
