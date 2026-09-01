@@ -408,20 +408,25 @@ def _mise_environment(project):
         "MISE_DEFAULT_CONFIG_FILENAME",
         "MISE_ENV",
         "MISE_ENV_FILE",
+        "MISE_GLOBAL_CONFIG_FILE",
         "MISE_IGNORED_CONFIG_PATHS",
         "MISE_PROJECT_ROOT",
+        "MISE_SYSTEM_CONFIG_FILE",
     ):
         environment.pop(name, None)
     for name in tuple(environment):
-        if name.startswith("__MISE_"):
+        if name.startswith("__MISE_") or re.fullmatch(r"MISE_[A-Z0-9_]+_VERSION", name):
             environment.pop(name, None)
 
     repository = os.path.realpath(project["dir"])
-    manifest = os.path.join(repository, "mise.toml")
+    isolation_root = os.path.join(
+        os.path.dirname(os.path.realpath(ACTION_ERRORS)),
+        ".devstacks-mise-isolation",
+    )
     environment["MISE_LOCKED"] = "1"
-    environment["MISE_GLOBAL_CONFIG_FILE"] = manifest
-    environment["MISE_SYSTEM_CONFIG_FILE"] = manifest
-    environment["MISE_CEILING_PATHS"] = repository
+    environment["MISE_CONFIG_DIR"] = os.path.join(isolation_root, "config")
+    environment["MISE_SYSTEM_CONFIG_DIR"] = os.path.join(isolation_root, "system")
+    environment["MISE_CEILING_PATHS"] = os.path.dirname(repository)
     environment["MISE_OVERRIDE_CONFIG_FILENAMES"] = "mise.toml"
     environment["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] = ".devstacks-disabled"
     environment["MISE_IDIOMATIC_VERSION_FILE"] = "0"
@@ -430,6 +435,22 @@ def _mise_environment(project):
     environment["MISE_EXEC_AUTO_INSTALL"] = "0"
     environment["MISE_NOT_FOUND_AUTO_INSTALL"] = "0"
     return environment
+
+
+def _mise_error_detail(stderr, fallback):
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    trust_error = next(
+        (line for line in lines if "not trusted" in line.lower()),
+        None,
+    )
+    if trust_error:
+        return trust_error[:180]
+    useful = [
+        line for line in lines
+        if not line.startswith("mise ERROR Version:")
+        and "Run with --verbose" not in line
+    ]
+    return useful[-1][:180] if useful else fallback
 
 
 def _mise_preflight(mise_bin, project):
@@ -441,8 +462,10 @@ def _mise_preflight(mise_bin, project):
             capture_output=True, text=True, timeout=8, env=environment,
         )
         if config_result.returncode != 0:
-            detail = config_result.stderr.strip().splitlines()
-            return None, detail[-1][:180] if detail else "mise config isolation failed"
+            return None, _mise_error_detail(
+                config_result.stderr,
+                "mise config isolation failed",
+            )
         config_payload = json.loads(config_result.stdout)
         if not isinstance(config_payload, list) or not config_payload:
             return None, "mise config isolation did not return a configuration list"
@@ -462,8 +485,10 @@ def _mise_preflight(mise_bin, project):
         return None, f"mise preflight failed: {exc.__class__.__name__}"
     executable = result.stdout.strip()
     if result.returncode != 0 or not os.path.isabs(executable) or not os.access(executable, os.X_OK):
-        detail = result.stderr.strip().splitlines()
-        return None, detail[-1][:180] if detail else "locked process-compose is unavailable"
+        return None, _mise_error_detail(
+            result.stderr,
+            "locked process-compose is unavailable",
+        )
     return executable, None
 
 

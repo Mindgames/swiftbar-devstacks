@@ -55,8 +55,13 @@ if [ "${1:-}" = "which" ]; then
   exit 0
 fi
 if [ "${1:-}" = "config" ]; then
+  status="${MISE_STUB_CONFIG_STATUS:-0}"
+  if [ "$status" != "0" ]; then
+    printf '%s\\n' "${MISE_STUB_CONFIG_ERROR:-repository manifest is not trusted}" >&2
+    exit "$status"
+  fi
   printf '%s\\n' "$MISE_STUB_CONFIG_JSON"
-  exit "${MISE_STUB_CONFIG_STATUS:-0}"
+  exit 0
 fi
 exit "${MISE_STUB_EXEC_STATUS:-0}"
 """,
@@ -261,16 +266,23 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             "MISE_ENV": "production",
             "MISE_IGNORED_CONFIG_PATHS": str(self.repository / "mise.toml"),
             "MISE_GLOBAL_CONFIG_FILE": str(self.root / "global.toml"),
+            "MISE_GO_VERSION": "1.23.8",
             "MISE_SYSTEM_CONFIG_FILE": str(self.root / "system.toml"),
             "__MISE_SESSION": "ambient",
         }
         with mock.patch.dict(os.environ, poisoned, clear=False):
             environment = DEVSTACKS._mise_environment(self.project)
 
-        manifest = str((self.repository / "mise.toml").resolve())
-        self.assertEqual(environment["MISE_GLOBAL_CONFIG_FILE"], manifest)
-        self.assertEqual(environment["MISE_SYSTEM_CONFIG_FILE"], manifest)
-        self.assertEqual(environment["MISE_CEILING_PATHS"], str(self.repository.resolve()))
+        isolation_root = Path(os.path.realpath(self.root)) / ".devstacks-mise-isolation"
+        self.assertEqual(environment["MISE_CONFIG_DIR"], str(isolation_root / "config"))
+        self.assertEqual(
+            environment["MISE_SYSTEM_CONFIG_DIR"],
+            str(isolation_root / "system"),
+        )
+        self.assertEqual(
+            environment["MISE_CEILING_PATHS"],
+            str(self.repository.resolve().parent),
+        )
         self.assertEqual(environment["MISE_OVERRIDE_CONFIG_FILENAMES"], "mise.toml")
         self.assertEqual(
             environment["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"],
@@ -279,8 +291,7 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         self.assertEqual(environment["MISE_LOCKED"], "1")
         self.assertEqual(environment["MISE_EXEC_AUTO_INSTALL"], "0")
         for name in poisoned:
-            if name not in ("MISE_GLOBAL_CONFIG_FILE", "MISE_SYSTEM_CONFIG_FILE"):
-                self.assertNotIn(name, environment)
+            self.assertNotIn(name, environment)
 
     def test_mise_preflight_rejects_any_additional_config(self):
         leaked = json.dumps(
@@ -296,6 +307,27 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         self.assertEqual(result, 2)
         payload = json.loads(self.errors.read_text(encoding="utf-8"))
         self.assertIn("only the repository manifest", payload[self.project["name"]]["message"])
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_mise_preflight_preserves_an_untrusted_manifest_failure(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MISE_STUB_CONFIG_STATUS": "1",
+                "MISE_STUB_CONFIG_ERROR": (
+                    "mise ERROR Config files in repository/mise.toml are not trusted.\n"
+                    "mise ERROR Version: 2026.8.15 macos-arm64\n"
+                    "mise ERROR Run with --verbose or MISE_VERBOSE=1 for more information"
+                ),
+            },
+            clear=False,
+        ):
+            result = DEVSTACKS.run_action(
+                self.project["name"], "up", config_path=str(self.config)
+            )
+        self.assertEqual(result, 2)
+        payload = json.loads(self.errors.read_text(encoding="utf-8"))
+        self.assertIn("not trusted", payload[self.project["name"]]["message"])
         self.assertEqual(len(self.calls()), 1)
 
     def test_version_one_is_status_only(self):
