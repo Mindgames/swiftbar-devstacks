@@ -206,23 +206,28 @@ def shell_action(command, terminal=False):
 def load_config(path=None):
     """Load the versioned config while recognizing the bounded v1 transition."""
     path = path or CONFIG
+    default_settings = {"mise": {}, "docker": {}}
     try:
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, ValueError) as exc:
-        return 0, {}, [], f"Cannot read {path}: {exc.__class__.__name__}"
+        return 0, default_settings, [], f"Cannot read {path}: {exc.__class__.__name__}"
 
     if isinstance(payload, list):
-        return 1, {"mise": {}, "docker": {}}, payload, (
+        return 1, default_settings, payload, (
             "Configuration v1 is status-only; migrate to version 2"
         )
     if not isinstance(payload, dict):
-        return 0, {}, [], "Configuration root must be an object"
+        return 0, default_settings, [], "Configuration root must be an object"
 
     version = payload.get("version")
     projects = payload.get("projects")
-    mise_settings = payload.get("mise") or {}
-    docker_settings = payload.get("docker") or {}
+    mise_settings = payload.get("mise")
+    docker_settings = payload.get("docker")
+    if mise_settings is None:
+        mise_settings = {}
+    if docker_settings is None:
+        docker_settings = {}
     settings = {"mise": mise_settings, "docker": docker_settings}
     if version != CONFIG_VERSION:
         return version or 0, settings, projects if isinstance(projects, list) else [], (
@@ -506,11 +511,10 @@ def proc_colour(proc):
     return DIM
 
 
-def containers(docker_bin=None):
+def containers(docker_bin):
     """Running containers as dicts. Docker Desktop can hang while the VM starts
     or stops, so this is bounded — a wedged daemon must not freeze the menu bar."""
     fmt = '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}'
-    docker_bin = docker_bin or resolve_docker()
     if not docker_bin:
         return None
     try:
@@ -577,7 +581,7 @@ def owns(project, container):
     return False
 
 
-def render_container(container, depth, docker_bin=None):
+def render_container(container, depth, docker_bin):
     """Render one container and its actions, nested at `depth` dashes."""
     d = "-" * depth
     status = container["status"]
@@ -602,7 +606,9 @@ def render_container(container, depth, docker_bin=None):
         print(f"{d}--Ports: {shown} | {FONT} color={DIM}")
 
     name = shlex.quote(container["name"])
-    docker = shlex.quote(docker_bin or resolve_docker() or "docker")
+    if not docker_bin:
+        return
+    docker = shlex.quote(docker_bin)
     print(f"{d}--Logs (Terminal) | {shell_action(f'{docker} logs -f --tail 200 {name}', terminal=True)}")
     print(f"{d}--Restart | {shell_action(f'{docker} restart {name}')}")
     print(f"{d}--Stop | {shell_action(f'{docker} stop {name}')} color={RED}")

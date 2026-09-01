@@ -259,6 +259,43 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         self.assertEqual(projects, [self.project])
         self.assertIn("status-only", error)
 
+    def test_unreadable_config_still_renders_a_recoverable_menu(self):
+        missing = self.root / "missing-projects.json"
+        version, settings, projects, error = DEVSTACKS.load_config(str(missing))
+        self.assertEqual(version, 0)
+        self.assertEqual(settings, {"mise": {}, "docker": {}})
+        self.assertEqual(projects, [])
+        self.assertIn("Cannot read", error)
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(DEVSTACKS, "CONFIG", str(missing)),
+            mock.patch.object(DEVSTACKS, "containers", return_value=None),
+            contextlib.redirect_stdout(output),
+        ):
+            DEVSTACKS.main([])
+        rendered = output.getvalue()
+        self.assertIn("Configuration: Cannot read", rendered)
+        self.assertIn("Edit projects", rendered)
+
+    def test_falsy_non_object_tool_settings_are_rejected(self):
+        for key in ("mise", "docker"):
+            for invalid in ([], "", False, 0):
+                with self.subTest(key=key, invalid=invalid):
+                    payload = {
+                        "version": 2,
+                        "mise": {"bin": str(self.mise)},
+                        "docker": {},
+                        "projects": [self.project],
+                    }
+                    payload[key] = invalid
+                    self.config.write_text(json.dumps(payload), encoding="utf-8")
+                    _, _, _, error = DEVSTACKS.load_config(str(self.config))
+                    self.assertEqual(
+                        error,
+                        f"Configuration {'Docker' if key == 'docker' else 'mise'} settings must be an object",
+                    )
+
     def test_docker_actions_are_independent_of_mise(self):
         output = io.StringIO()
         container = {
@@ -293,6 +330,10 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         )
         self.assertIsNone(DEVSTACKS.resolve_docker({"bin": "relative/docker"}))
         self.assertIsNone(DEVSTACKS.resolve_docker({"bin": 42}))
+
+    def test_failed_explicit_docker_resolution_never_falls_back(self):
+        with mock.patch.object(DEVSTACKS, "resolve_docker", side_effect=AssertionError):
+            self.assertIsNone(DEVSTACKS.containers(None))
 
     def test_interactive_exec_failure_is_persisted_for_the_menu(self):
         with mock.patch.object(
