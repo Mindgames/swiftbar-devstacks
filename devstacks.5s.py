@@ -22,6 +22,7 @@ import fcntl
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import struct
@@ -41,7 +42,10 @@ ACTION_ERRORS = os.path.expanduser(
 )
 CONFIG_VERSION = 2
 PLUGIN_PATH = os.path.realpath(__file__)
+PYTHON_EXECUTABLE = os.path.realpath(sys.executable)
 PROCESS_COMPOSE_ADDRESS = "127.0.0.1"
+ACTION_TIMEOUT_SECONDS = 180
+ACTION_TERMINATION_GRACE_SECONDS = 3
 MISE_CANDIDATES = (
     os.path.expanduser("~/.local/bin/mise"),
 )
@@ -309,7 +313,7 @@ def swiftbar_action(project_name, operation, *arguments, terminal=False):
         f"param{index}={shlex.quote(value)}" for index, value in enumerate(params)
     )
     return (
-        f"shell=/usr/bin/python3 {rendered} "
+        f"shell={shlex.quote(PYTHON_EXECUTABLE)} {rendered} "
         f"terminal={'true' if terminal else 'false'} refresh=true"
     )
 
@@ -412,6 +416,7 @@ def _mise_environment(project):
         "MISE_IGNORED_CONFIG_PATHS",
         "MISE_PROJECT_ROOT",
         "MISE_SYSTEM_CONFIG_FILE",
+        "MISE_TRUSTED_CONFIG_PATHS",
     ):
         environment.pop(name, None)
     for name in tuple(environment):
@@ -492,6 +497,58 @@ def _mise_preflight(mise_bin, project):
     return executable, None
 
 
+def _process_group_exists(process_group):
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process_group(process, grace_seconds):
+    process_group = process.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + grace_seconds
+    while _process_group_exists(process_group) and time.monotonic() < deadline:
+        process.poll()
+        time.sleep(0.05)
+
+    if _process_group_exists(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=max(grace_seconds, 1))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_bounded_action(
+    invocation,
+    environment,
+    timeout=ACTION_TIMEOUT_SECONDS,
+    termination_grace=ACTION_TERMINATION_GRACE_SECONDS,
+):
+    process = subprocess.Popen(
+        invocation,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        return process.wait(timeout=timeout), None
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process, termination_grace)
+        return None, f"action timed out after {timeout:g} seconds"
+
+
 def run_action(project_name, operation, arguments=(), config_path=None):
     version, settings, projects, config_error = load_config(config_path)
     matches = [
@@ -566,15 +623,18 @@ def run_action(project_name, operation, arguments=(), config_path=None):
             _clear_action_error(project_name)
         return result.returncode
     try:
-        result = subprocess.run(invocation, timeout=180, env=environment)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        returncode, timeout_error = _run_bounded_action(invocation, environment)
+    except OSError as exc:
         _record_action_error(project_name, f"action failed: {exc.__class__.__name__}")
         return 1
-    if result.returncode != 0:
-        _record_action_error(project_name, f"action exited with status {result.returncode}")
+    if timeout_error:
+        _record_action_error(project_name, timeout_error)
+        return 1
+    if returncode != 0:
+        _record_action_error(project_name, f"action exited with status {returncode}")
     else:
         _clear_action_error(project_name)
-    return result.returncode
+    return returncode
 
 
 # A process with no readiness probe reports "-", which means "not measured",

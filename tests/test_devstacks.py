@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -168,7 +170,7 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             self.project["name"], "process-restart", process_name, terminal=True
         )
         fields = dict(token.split("=", 1) for token in shlex.split(rendered))
-        self.assertEqual(fields["shell"], "/usr/bin/python3")
+        self.assertEqual(fields["shell"], os.path.realpath(sys.executable))
         self.assertEqual(fields["param0"], str(ROOT / "devstacks.5s.py"))
         self.assertEqual(fields["param2"], self.project["name"])
         self.assertEqual(fields["param3"], "process-restart")
@@ -268,6 +270,7 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             "MISE_GLOBAL_CONFIG_FILE": str(self.root / "global.toml"),
             "MISE_GO_VERSION": "1.23.8",
             "MISE_SYSTEM_CONFIG_FILE": str(self.root / "system.toml"),
+            "MISE_TRUSTED_CONFIG_PATHS": str(self.repository / "mise.toml"),
             "__MISE_SESSION": "ambient",
         }
         with mock.patch.dict(os.environ, poisoned, clear=False):
@@ -502,6 +505,54 @@ module._record_action_error(sys.argv[3], "concurrent failure")
         self.assertEqual(result, 23)
         self.assertIn("cannot persist action error: OSError", stderr.getvalue())
 
+    def test_bounded_action_timeout_terminates_the_process_group(self):
+        child_pid_path = self.root / "timed-out-child.pid"
+        child_source = "\n".join(
+            (
+                "import os",
+                "import signal",
+                "import time",
+                "from pathlib import Path",
+                f"Path({str(child_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')",
+                "signal.signal(signal.SIGTERM, lambda *_: None)",
+                "while True: time.sleep(1)",
+            )
+        )
+        parent_source = "\n".join(
+            (
+                "import subprocess",
+                "import sys",
+                "import time",
+                f"subprocess.Popen([sys.executable, '-c', {child_source!r}])",
+                "time.sleep(60)",
+            )
+        )
+
+        returncode, error = DEVSTACKS._run_bounded_action(
+            [sys.executable, "-c", parent_source],
+            os.environ.copy(),
+            timeout=1,
+            termination_grace=0.2,
+        )
+
+        self.assertIsNone(returncode)
+        self.assertIn("timed out after 1 seconds", error)
+        self.assertTrue(child_pid_path.is_file())
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        self.addCleanup(lambda: os.kill(child_pid, signal.SIGKILL) if self._pid_exists(child_pid) else None)
+        deadline = time.monotonic() + 2
+        while self._pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(self._pid_exists(child_pid))
+
+    @staticmethod
+    def _pid_exists(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
     def test_plugin_has_no_package_manager_path_fallback(self):
         source = (ROOT / "devstacks.5s.py").read_text(encoding="utf-8")
         ast.parse(source, filename="devstacks.5s.py", feature_version=(3, 8))
@@ -510,6 +561,7 @@ module._record_action_error(sys.argv[3], "concurrent failure")
         self.assertNotIn("PNPM_HOME", source)
         self.assertNotIn(".removeprefix(", source)
         self.assertNotIn("execvpe", source)
+        self.assertNotIn("/usr/bin/python3", source)
 
     def test_example_uses_only_version_two_mise_contract(self):
         payload = json.loads((ROOT / "projects.example.json").read_text(encoding="utf-8"))
