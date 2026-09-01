@@ -428,7 +428,16 @@ def _mise_environment(project):
         os.path.dirname(os.path.realpath(ACTION_ERRORS)),
         ".devstacks-mise-isolation",
     )
+    user_home = os.path.expanduser("~")
+    cache_directory = (
+        os.path.join(user_home, "Library", "Caches", "mise")
+        if sys.platform == "darwin"
+        else os.path.join(user_home, ".cache", "mise")
+    )
     environment["MISE_LOCKED"] = "1"
+    environment["MISE_DATA_DIR"] = os.path.join(user_home, ".local", "share", "mise")
+    environment["MISE_CACHE_DIR"] = cache_directory
+    environment["MISE_STATE_DIR"] = os.path.join(user_home, ".local", "state", "mise")
     environment["MISE_CONFIG_DIR"] = os.path.join(isolation_root, "config")
     environment["MISE_SYSTEM_CONFIG_DIR"] = os.path.join(isolation_root, "system")
     environment["MISE_CEILING_PATHS"] = os.path.dirname(repository)

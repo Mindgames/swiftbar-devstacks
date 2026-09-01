@@ -264,24 +264,41 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
 
     def test_mise_environment_restricts_config_to_the_repository_manifest(self):
         poisoned = {
+            "MISE_CACHE_DIR": str(self.root / "ambient-cache"),
+            "MISE_CONFIG_DIR": str(self.root / "ambient-config"),
             "MISE_CONFIG_FILE": str(self.root / "other.toml"),
+            "MISE_DATA_DIR": str(self.root / "ambient-data"),
             "MISE_ENV": "production",
             "MISE_IGNORED_CONFIG_PATHS": str(self.repository / "mise.toml"),
             "MISE_GLOBAL_CONFIG_FILE": str(self.root / "global.toml"),
             "MISE_GO_VERSION": "1.23.8",
+            "MISE_STATE_DIR": str(self.root / "ambient-state"),
+            "MISE_SYSTEM_CONFIG_DIR": str(self.root / "ambient-system"),
             "MISE_SYSTEM_CONFIG_FILE": str(self.root / "system.toml"),
             "MISE_TRUSTED_CONFIG_PATHS": str(self.repository / "mise.toml"),
             "__MISE_SESSION": "ambient",
         }
-        with mock.patch.dict(os.environ, poisoned, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {**poisoned, "HOME": str(self.root)},
+            clear=False,
+        ):
             environment = DEVSTACKS._mise_environment(self.project)
 
         isolation_root = Path(os.path.realpath(self.root)) / ".devstacks-mise-isolation"
-        self.assertEqual(environment["MISE_CONFIG_DIR"], str(isolation_root / "config"))
-        self.assertEqual(
-            environment["MISE_SYSTEM_CONFIG_DIR"],
-            str(isolation_root / "system"),
-        )
+        isolated_directories = {
+            "MISE_DATA_DIR": self.root / ".local" / "share" / "mise",
+            "MISE_CACHE_DIR": (
+                self.root / "Library" / "Caches" / "mise"
+                if DEVSTACKS.sys.platform == "darwin"
+                else self.root / ".cache" / "mise"
+            ),
+            "MISE_STATE_DIR": self.root / ".local" / "state" / "mise",
+            "MISE_CONFIG_DIR": isolation_root / "config",
+            "MISE_SYSTEM_CONFIG_DIR": isolation_root / "system",
+        }
+        for name, expected in isolated_directories.items():
+            self.assertEqual(environment[name], str(expected))
         self.assertEqual(
             environment["MISE_CEILING_PATHS"],
             str(self.repository.resolve().parent),
@@ -294,7 +311,8 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         self.assertEqual(environment["MISE_LOCKED"], "1")
         self.assertEqual(environment["MISE_EXEC_AUTO_INSTALL"], "0")
         for name in poisoned:
-            self.assertNotIn(name, environment)
+            if name not in isolated_directories:
+                self.assertNotIn(name, environment)
 
     def test_mise_preflight_rejects_any_additional_config(self):
         leaked = json.dumps(
