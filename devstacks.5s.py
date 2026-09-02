@@ -211,6 +211,23 @@ def shell_action(command, terminal=False):
     )
 
 
+def _normalize_project(project):
+    """Expand `~/` project paths to the current user's home directory."""
+    if not isinstance(project, dict):
+        return project
+    normalized = dict(project)
+    directory = normalized.get("dir")
+    if isinstance(directory, str):
+        normalized["dir"] = os.path.expanduser(directory)
+    return normalized
+
+
+def _normalize_projects(projects):
+    if not isinstance(projects, list):
+        return []
+    return [_normalize_project(item) for item in projects]
+
+
 def load_config(path=None):
     """Load the versioned config while recognizing the bounded v1 transition."""
     path = path or CONFIG
@@ -222,7 +239,7 @@ def load_config(path=None):
         return 0, default_settings, [], f"Cannot read {path}: {exc.__class__.__name__}"
 
     if isinstance(payload, list):
-        return 1, default_settings, payload, (
+        return 1, default_settings, _normalize_projects(payload), (
             "Configuration v1 is status-only; migrate to version 2"
         )
     if not isinstance(payload, dict):
@@ -238,11 +255,12 @@ def load_config(path=None):
         docker_settings = {}
     settings = {"mise": mise_settings, "docker": docker_settings}
     if version != CONFIG_VERSION:
-        return version or 0, settings, projects if isinstance(projects, list) else [], (
+        return version or 0, settings, _normalize_projects(projects), (
             f"Unsupported configuration version: {version!r}; expected {CONFIG_VERSION}"
         )
     if not isinstance(projects, list):
         return version, settings, [], "Configuration projects must be a list"
+    projects = _normalize_projects(projects)
     if not isinstance(mise_settings, dict):
         return version, settings, projects, "Configuration mise settings must be an object"
     if not isinstance(docker_settings, dict):
@@ -272,6 +290,7 @@ def project_static_error(project, version, mise_bin):
         return f"configuration version {CONFIG_VERSION} is required for controls"
     if not isinstance(project, dict):
         return "project entry must be an object"
+    project = _normalize_project(project)
     name = project.get("name")
     directory = project.get("dir")
     port = project.get("port")
@@ -428,7 +447,16 @@ def _mise_environment(project):
         os.path.dirname(os.path.realpath(ACTION_ERRORS)),
         ".devstacks-mise-isolation",
     )
+    user_home = os.path.expanduser("~")
+    cache_directory = (
+        os.path.join(user_home, "Library", "Caches", "mise")
+        if sys.platform == "darwin"
+        else os.path.join(user_home, ".cache", "mise")
+    )
     environment["MISE_LOCKED"] = "1"
+    environment["MISE_DATA_DIR"] = os.path.join(user_home, ".local", "share", "mise")
+    environment["MISE_CACHE_DIR"] = cache_directory
+    environment["MISE_STATE_DIR"] = os.path.join(user_home, ".local", "state", "mise")
     environment["MISE_CONFIG_DIR"] = os.path.join(isolation_root, "config")
     environment["MISE_SYSTEM_CONFIG_DIR"] = os.path.join(isolation_root, "system")
     environment["MISE_CEILING_PATHS"] = os.path.dirname(repository)
@@ -555,7 +583,7 @@ def run_action(project_name, operation, arguments=(), config_path=None):
         item for item in projects
         if isinstance(item, dict) and item.get("name") == project_name
     ]
-    project = matches[0] if len(matches) == 1 else None
+    project = _normalize_project(matches[0]) if len(matches) == 1 else None
     mise_bin = resolve_mise(settings["mise"])
     duplicate_error = "project name is duplicated" if len(matches) > 1 else None
     error = config_error or duplicate_error or ("project is not configured" if project is None else None)

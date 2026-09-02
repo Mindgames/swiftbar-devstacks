@@ -59,7 +59,7 @@ entries. Lifecycle commands are argument arrays. They are not shell strings.
   "projects": [
     {
       "name": "myapp",
-      "dir": "/Users/you/Projects/myapp/myapp-ops",
+      "dir": "~/Projects/myapp/myapp-ops",
       "port": 8099,
       "toolchain": "mise",
       "commands": {
@@ -82,7 +82,7 @@ entries. Lifecycle commands are argument arrays. They are not shell strings.
 | `mise.bin` | no | Absolute mise executable. Default: `~/.local/bin/mise`. |
 | `docker.bin` | no | Absolute Docker executable. Default: environment, current `PATH`, then Docker Desktop. |
 | `name` | yes | Stable display name and action identifier. |
-| `dir` | yes | Absolute repository directory containing `mise.toml` and `mise.lock`. |
+| `dir` | yes | Repository directory containing `mise.toml` and `mise.lock`. Absolute, or `~/...` expanded to the current user's home. |
 | `port` | yes | Loopback Process Compose REST port. |
 | `toolchain` | yes | Must be `mise` to enable controls. |
 | `commands.up` | yes | Repository-owned stack start command as an argument array. |
