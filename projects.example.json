@@ -5,7 +5,7 @@
   "projects": [
     {
       "name": "myapp",
-      "dir": "/Users/you/Projects/myapp/myapp-ops",
+      "dir": "~/Projects/myapp/myapp-ops",
       "port": 8099,
       "toolchain": "mise",
       "commands": {
