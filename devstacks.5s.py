@@ -19,6 +19,7 @@
 
 import base64
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -191,7 +192,7 @@ def api(port, path, timeout=1.5):
             f"http://{PROCESS_COMPOSE_ADDRESS}:{port}{path}", timeout=timeout
         ) as r:
             return json.loads(r.read().decode())
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError, TimeoutError):
         return None
 
 
