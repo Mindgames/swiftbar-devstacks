@@ -1,5 +1,6 @@
 import ast
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -685,6 +686,89 @@ module._record_action_error(sys.argv[3], "concurrent failure")
             self.assertNotIn("path", project)
             self.assertEqual(set(project["commands"]), {"up", "restart", "down"})
             self.assertTrue(all(isinstance(value, list) for value in project["commands"].values()))
+
+
+class StatusResponseRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def response(raw):
+        socket = mock.Mock()
+        socket.makefile.return_value = io.BytesIO(raw)
+        response = http.client.HTTPResponse(socket)
+        response.begin()
+        return response
+
+    def test_truncated_responses_are_unavailable_status(self):
+        responses = (
+            b'HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{"data": [',
+            b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n32\r\n{"data": [',
+        )
+        for raw in responses:
+            with self.subTest(raw=raw):
+                with mock.patch.object(
+                    DEVSTACKS.urllib.request, "urlopen", return_value=self.response(raw)
+                ):
+                    self.assertIsNone(DEVSTACKS.processes(8099))
+
+    def test_bad_status_line_is_unavailable_status(self):
+        with mock.patch.object(
+            DEVSTACKS.urllib.request, "urlopen",
+            side_effect=http.client.BadStatusLine("interrupted response"),
+        ):
+            self.assertIsNone(DEVSTACKS.processes(8099))
+
+    def test_unrelated_errors_are_not_swallowed(self):
+        with mock.patch.object(
+            DEVSTACKS.urllib.request, "urlopen", side_effect=RuntimeError("unexpected bug")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected bug"):
+                DEVSTACKS.processes(8099)
+
+    def test_interrupted_stack_keeps_menu_and_recovers_on_next_refresh(self):
+        projects = [
+            {"name": "interrupted", "port": 8091},
+            {"name": "healthy", "port": 8092},
+        ]
+        healthy_body = b'{"data": [{"name": "api", "status": "Running", "is_ready": "Ready"}]}'
+
+        def healthy_response():
+            return self.response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(healthy_body)).encode()
+                + b"\r\n\r\n" + healthy_body
+            )
+
+        responses = [
+            self.response(b'HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{"data": ['),
+            healthy_response(),
+            healthy_response(),
+            healthy_response(),
+        ]
+        with (
+            mock.patch.object(DEVSTACKS, "load_config", return_value=(
+                1, {"mise": {}, "docker": {}}, projects, "Configuration v1 is status-only"
+            )),
+            mock.patch.object(DEVSTACKS, "resolve_mise", return_value=None),
+            mock.patch.object(DEVSTACKS, "resolve_docker", return_value=None),
+            mock.patch.object(DEVSTACKS, "_read_action_errors", return_value={}),
+            mock.patch.object(DEVSTACKS, "containers", return_value=None),
+            mock.patch.object(DEVSTACKS.urllib.request, "urlopen", side_effect=responses),
+        ):
+            interrupted_output = io.StringIO()
+            with contextlib.redirect_stdout(interrupted_output):
+                DEVSTACKS.main([])
+            rendered = interrupted_output.getvalue()
+            self.assertIn("interrupted — stopped", rendered)
+            self.assertIn("healthy — 1/1 healthy", rendered)
+            self.assertIn("Refresh | refresh=true", rendered)
+            self.assertIn("Edit projects", rendered)
+
+            recovered_output = io.StringIO()
+            with contextlib.redirect_stdout(recovered_output):
+                DEVSTACKS.main([])
+            recovered = recovered_output.getvalue()
+            self.assertIn("interrupted — 1/1 healthy", recovered)
+            self.assertIn("healthy — 1/1 healthy", recovered)
+            self.assertIn("2 stacks · 2/2 processes healthy", recovered)
 
 
 class ContainerOwnershipTests(unittest.TestCase):
