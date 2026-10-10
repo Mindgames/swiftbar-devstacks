@@ -775,6 +775,19 @@ def owns(project, container):
     return False
 
 
+def container_owner(projects, container):
+    """Prefer an explicit Compose label claim before any prefix fallback."""
+    compose = container["compose"]
+    if compose:
+        for project in projects:
+            if compose in (project.get("compose") or []):
+                return project
+    for project in projects:
+        if owns(project, container):
+            return project
+    return None
+
+
 def render_container(container, depth, docker_bin):
     """Render one container and its actions, nested at `depth` dashes."""
     d = "-" * depth
@@ -842,10 +855,9 @@ def main(argv=None):
     owned = {}
     unclaimed = []
     for container in (docker_rows or []):
-        for project in projects:
-            if owns(project, container):
-                owned.setdefault(project["name"], []).append(container)
-                break
+        project = container_owner(projects, container)
+        if project is not None:
+            owned.setdefault(project["name"], []).append(container)
         else:
             unclaimed.append(container)
 
