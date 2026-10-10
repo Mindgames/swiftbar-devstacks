@@ -687,5 +687,82 @@ module._record_action_error(sys.argv[3], "concurrent failure")
             self.assertTrue(all(isinstance(value, list) for value in project["commands"].values()))
 
 
+class ContainerOwnershipTests(unittest.TestCase):
+    def render_menu(self, projects, container, processes=None):
+        output = io.StringIO()
+        with (
+            mock.patch.object(DEVSTACKS, "load_config", return_value=(
+                1, {"mise": {}, "docker": {}}, projects, "Configuration v1 is status-only"
+            )),
+            mock.patch.object(DEVSTACKS, "resolve_mise", return_value=None),
+            mock.patch.object(DEVSTACKS, "resolve_docker", return_value=None),
+            mock.patch.object(DEVSTACKS, "_read_action_errors", return_value={}),
+            mock.patch.object(DEVSTACKS, "processes", return_value=processes),
+            mock.patch.object(DEVSTACKS, "containers", return_value=[container]),
+            contextlib.redirect_stdout(output),
+        ):
+            DEVSTACKS.main([])
+        return output.getvalue()
+
+    def container(self, compose="api-tools", name="api-tools-db-1"):
+        return {
+            "name": name, "compose": compose, "status": "Up 1 hour",
+            "image": "postgres:17", "ports": [],
+        }
+
+    def assert_container_section(self, rendered, section_name, container):
+        section = next(
+            section for section in rendered.split("\n---\n")
+            if section.startswith(section_name + " — ")
+        )
+        row = "▣ " + container["name"] + "  " + container["status"]
+        self.assertIn(row, section)
+        self.assertEqual(rendered.count(row), 1)
+
+    def test_explicit_compose_owner_wins_before_earlier_prefix_match(self):
+        generic = {"name": "api", "port": 8091, "compose": ["api-main"]}
+        explicit = {"name": "tools", "port": 8092, "compose": ["api-tools"]}
+        container = self.container()
+        for projects in ([generic, explicit], [explicit, generic]):
+            for processes in (None, []):
+                with self.subTest(projects=projects, processes=processes):
+                    rendered = self.render_menu(projects, container, processes)
+                    self.assert_container_section(rendered, "tools", container)
+                    self.assertNotIn("Other containers", rendered)
+
+    def test_compose_prefix_fallback_is_preserved_without_explicit_owner(self):
+        projects = [{"name": "api", "port": 8091}]
+        container = self.container()
+        self.assert_container_section(self.render_menu(projects, container), "api", container)
+
+    def test_unlabelled_container_name_fallback_is_preserved(self):
+        projects = [{"name": "api", "port": 8091}]
+        container = self.container(compose="")
+        self.assert_container_section(self.render_menu(projects, container), "api", container)
+
+    def test_unmatched_label_does_not_fall_back_to_container_name(self):
+        projects = [{"name": "api", "port": 8091}]
+        container = self.container(compose="unrelated")
+        self.assert_container_section(
+            self.render_menu(projects, container), "Other containers", container
+        )
+
+    def test_duplicate_explicit_claims_keep_first_owner_and_single_row(self):
+        projects = [
+            {"name": "first", "port": 8091, "compose": ["api-tools"]},
+            {"name": "second", "port": 8092, "compose": ["api-tools"]},
+        ]
+        container = self.container()
+        self.assert_container_section(self.render_menu(projects, container), "first", container)
+
+    def test_prefix_only_matches_keep_existing_first_owner(self):
+        projects = [
+            {"name": "api", "port": 8091},
+            {"name": "api-tools", "port": 8092},
+        ]
+        container = self.container()
+        self.assert_container_section(self.render_menu(projects, container), "api", container)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,11 @@ and version 2 disables controls when one is present.
 See [`projects.example.json`](projects.example.json) for a complete generic
 example.
 
+Containers with an explicitly configured Compose project label are grouped
+under that project before name-prefix fallback is considered. Each container
+appears once; if multiple projects explicitly claim the same label, the first
+configured project wins, as with prefix-only matches.
+
 ## Repository onboarding and rollout
 
 Migrate one project atomically:
