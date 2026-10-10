@@ -732,13 +732,17 @@ def containers(docker_bin):
 
 
 def parse_ports(spec):
-    """Published (host_port, container_port) pairs, deduped.
+    """Published localhost-reachable (host_port, container_port) pairs, deduped.
 
     Docker prints both IPv4 and IPv6 bindings for the same publish, and may
     collapse consecutive ports into a range (4317-4318->4317-4318/tcp).
     """
     pairs = {}
-    for match in re.finditer(r"(?:0\.0\.0\.0|\[::\]):([\d-]+)->([\d-]+)/tcp", spec):
+    pattern = (
+        r"(?:^|,)\s*(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]|\[::1\]):"
+        r"([\d-]+)->([\d-]+)/tcp"
+    )
+    for match in re.finditer(pattern, spec):
         for host, container in zip(expand(match.group(1)), expand(match.group(2))):
             pairs[host] = container
     return sorted(pairs.items())

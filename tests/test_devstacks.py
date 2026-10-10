@@ -439,6 +439,57 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
                         f"Configuration {'Docker' if key == 'docker' else 'mise'} settings must be an object",
                     )
 
+    def test_parse_ports_accepts_loopback_bindings(self):
+        for address in ("127.0.0.1", "[::1]", "0.0.0.0", "[::]"):
+            with self.subTest(address=address):
+                self.assertEqual(
+                    DEVSTACKS.parse_ports(f"{address}:3300->3000/tcp"),
+                    [(3300, 3000)],
+                )
+
+    def test_parse_ports_deduplicates_bindings_and_expands_ranges(self):
+        self.assertEqual(
+            DEVSTACKS.parse_ports(
+                "127.0.0.1:4327-4328->4317-4318/tcp, "
+                "[::1]:4327-4328->4317-4318/tcp, "
+                "0.0.0.0:3300->3000/tcp, [::]:3300->3000/tcp"
+            ),
+            [(3300, 3000), (4327, 4317), (4328, 4318)],
+        )
+
+    def test_parse_ports_ignores_unpublished_udp_and_other_interface_bindings(self):
+        self.assertEqual(
+            DEVSTACKS.parse_ports(
+                "3000/tcp, 127.0.0.1:5353->5353/udp, "
+                "192.168.1.10:8080->8080/tcp, 10.0.0.0:3300->3000/tcp, "
+                "127.0.0.1:12345->12345/tcp"
+            ),
+            [(12345, 12345)],
+        )
+
+    def test_loopback_docker_ports_render_service_links_and_api_port_labels(self):
+        docker_output = (
+            "stack-observability|example:latest|Up 2 minutes|"
+            "127.0.0.1:3300->3000/tcp, 127.0.0.1:3100->3100/tcp, "
+            "127.0.0.1:4317-4318->4317-4318/tcp|stack-observability\n"
+            "stack-alloy|example:latest|Up 2 minutes|"
+            "127.0.0.1:12345->12345/tcp|stack-observability\n"
+        )
+        result = mock.Mock(returncode=0, stdout=docker_output)
+        with mock.patch.object(DEVSTACKS.subprocess, "run", return_value=result):
+            containers = DEVSTACKS.containers(str(self.tool))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            for container in containers:
+                DEVSTACKS.render_container(container, 2, str(self.tool))
+        rendered = output.getvalue()
+        self.assertIn("Open Grafana  —  http://localhost:3300 | href=http://localhost:3300", rendered)
+        self.assertIn("Open Alloy  —  http://localhost:12345 | href=http://localhost:12345", rendered)
+        self.assertIn("3100→3100 Loki API", rendered)
+        self.assertIn("4317→4317 OTLP gRPC", rendered)
+        self.assertIn("4318→4318 OTLP HTTP", rendered)
+        self.assertNotIn("Open Loki", rendered)
+
     def test_docker_actions_are_independent_of_mise(self):
         output = io.StringIO()
         container = {
