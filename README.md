@@ -141,6 +141,8 @@ The old config remains status-only by design.
 Controls fail closed. The menu reports a specific error when the project is not
 migrated, its directory or mise files are missing, mise is unavailable, the lock
 cannot resolve Process Compose, or an action exits unsuccessfully.
+A non-string project directory disables its managed controls and folder action
+without interrupting status display or the menu's configuration editor.
 
 1. Confirm the configured `dir` is the intended repository.
 2. Run `mise which --locked -C <dir> process-compose` in a terminal.
