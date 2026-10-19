@@ -422,6 +422,61 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
         self.assertIn("Configuration: Cannot read", rendered)
         self.assertIn("Edit projects", rendered)
 
+    def test_invalid_project_directory_does_not_interrupt_menu(self):
+        healthy = dict(self.project, name="healthy-stack", port=8100)
+        for invalid in (42, True, ["repository"], {"path": "repository"}):
+            with self.subTest(directory=invalid):
+                payload = {
+                    "version": 2,
+                    "mise": {"bin": str(self.mise)},
+                    "projects": [dict(self.project, dir=invalid), healthy],
+                }
+                self.config.write_text(json.dumps(payload), encoding="utf-8")
+                output = io.StringIO()
+                with (
+                    mock.patch.object(DEVSTACKS, "processes", side_effect=[None, [
+                        {"name": "api", "status": "Running", "is_ready": "Ready"},
+                    ]]) as processes,
+                    mock.patch.object(DEVSTACKS, "resolve_docker", return_value=None),
+                    mock.patch.object(DEVSTACKS, "_mise_preflight") as preflight,
+                    mock.patch.object(DEVSTACKS.subprocess, "run") as run,
+                    contextlib.redirect_stdout(output),
+                ):
+                    DEVSTACKS.main([])
+
+                rendered = output.getvalue()
+                stopped_section = rendered.split("healthy-stack —", 1)[0]
+                self.assertIn("Controls disabled: project directory must be absolute", stopped_section)
+                self.assertNotIn("Open folder", stopped_section)
+                self.assertNotIn("--Start stack", stopped_section)
+                self.assertIn("healthy-stack — 1/1 healthy", rendered)
+                self.assertIn("--Restart stack |", rendered)
+                self.assertIn("Refresh | refresh=true", rendered)
+                self.assertIn("Edit projects", rendered)
+                self.assertEqual(processes.call_args_list, [mock.call(8099), mock.call(8100)])
+                preflight.assert_not_called()
+                run.assert_not_called()
+
+    def test_stopped_project_folder_action_preserves_quoted_path(self):
+        output = io.StringIO()
+        with (
+            mock.patch.object(DEVSTACKS, "processes", return_value=None),
+            mock.patch.object(DEVSTACKS, "resolve_docker", return_value=None),
+            contextlib.redirect_stdout(output),
+        ):
+            DEVSTACKS.main([])
+        folder_line = next(
+            line for line in output.getvalue().splitlines()
+            if line.startswith("--Open folder | ")
+        )
+        fields = dict(
+            token.split("=", 1)
+            for token in shlex.split(folder_line.split(" | ", 1)[1])
+        )
+        self.assertEqual(fields["shell"], "/usr/bin/open")
+        self.assertEqual(fields["param0"], str(self.repository))
+        self.assertEqual(fields["terminal"], "false")
+
     def test_falsy_non_object_tool_settings_are_rejected(self):
         for key in ("mise", "docker"):
             for invalid in ([], "", False, 0):

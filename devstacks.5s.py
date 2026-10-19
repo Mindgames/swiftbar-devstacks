@@ -939,7 +939,7 @@ def main(argv=None):
                 print(f"--Start stack | {swiftbar_action(name, 'up')} color={GREEN}")
             if isinstance(last_error, dict) and last_error.get("message"):
                 print(f"--Last action error: {menu_text(last_error['message'])} | {FONT} color={RED}")
-            if directory:
+            if isinstance(directory, str) and directory:
                 print(f"--Open folder | shell=/usr/bin/open param0={shlex.quote(directory)} terminal=false")
             for container in sorted(mine, key=lambda c: c["name"]):
                 render_container(container, 2, docker_bin)
