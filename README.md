@@ -157,6 +157,9 @@ SwiftBar does not set these variables during normal use.
 
 A stopped or starting stack is not itself an error. Red means a process failed,
 restarted, or was skipped, or a container health check is failing.
+Process Compose reports failed command exits as `Completed` over REST. These
+also turn the icon and process row red unless the exit code is zero or listed
+in that process's `success_exit_codes`.
 
 ## Actions and isolation
 

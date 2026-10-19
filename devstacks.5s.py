@@ -683,6 +683,18 @@ def is_healthy(proc):
 BROKEN_STATUS = ("error", "failed", "restarting", "skipped")
 
 
+def failed_completion(proc):
+    """REST keeps failed exits as Completed; honour explicit success codes."""
+    exit_code = proc.get("exit_code")
+    if ((proc.get("status") or "").lower() != "completed"
+            or type(exit_code) is not int or exit_code == 0):
+        return False
+    success_codes = proc.get("success_exit_codes")
+    if not isinstance(success_codes, list):
+        success_codes = []
+    return not any(type(code) is int and code == exit_code for code in success_codes)
+
+
 def is_broken(proc):
     """Has this process failed, as distinct from merely not being ready yet?
 
@@ -691,11 +703,14 @@ def is_broken(proc):
     for the first ten or fifteen seconds of every healthy launch, which teaches
     you to ignore the colour exactly when it matters.
     """
-    return (proc.get("status") or "").lower() in BROKEN_STATUS
+    return ((proc.get("status") or "").lower() in BROKEN_STATUS
+            or failed_completion(proc))
 
 
 def proc_colour(proc):
     status = (proc.get("status") or "").lower()
+    if failed_completion(proc):
+        return RED
     if is_healthy(proc):
         return GREEN
     if status == "running":
