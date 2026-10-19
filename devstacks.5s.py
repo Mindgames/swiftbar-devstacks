@@ -700,7 +700,7 @@ def proc_colour(proc):
         return GREEN
     if status == "running":
         return AMBER
-    if status in ("restarting", "error", "failed"):
+    if status in BROKEN_STATUS:
         return RED
     return DIM
 
