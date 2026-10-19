@@ -170,6 +170,8 @@ restarted, or was skipped, or a container health check is failing.
 - Interactive log and TUI actions retain a small wrapper process so their exit
   status is recorded before SwiftBar refreshes.
 - Network and subprocess reads are bounded. Status refresh does not run mise.
+- Interrupted HTTP status responses are treated as unavailable for that refresh;
+  the rest of the menu remains usable and the next refresh retries the stack.
 - Docker uses its resolved executable and remains available for unmigrated or
   stopped projects.
 
