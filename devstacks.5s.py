@@ -769,9 +769,9 @@ def owns(project, container):
     Falls back to a name prefix so a container started outside the configured
     Compose projects still lands somewhere sensible.
     """
-    configured = project.get("compose") or []
+    configured = project.get("compose")
     compose = container["compose"]
-    if compose and compose in configured:
+    if compose and isinstance(configured, list) and compose in configured:
         return True
     if compose and compose.startswith(project["name"]):
         return True
@@ -785,7 +785,8 @@ def container_owner(projects, container):
     compose = container["compose"]
     if compose:
         for project in projects:
-            if compose in (project.get("compose") or []):
+            configured = project.get("compose")
+            if isinstance(configured, list) and compose in configured:
                 return project
     for project in projects:
         if owns(project, container):
