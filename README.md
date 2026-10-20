@@ -88,7 +88,7 @@ entries. Lifecycle commands are argument arrays. They are not shell strings.
 | `commands.up` | yes | Repository-owned stack start command as an argument array. |
 | `commands.restart` | yes | Repository-owned stack restart command as an argument array. |
 | `commands.down` | yes | Repository-owned stack stop command as an argument array. |
-| `compose` | no | Docker Compose project labels owned by this project. |
+| `compose` | no | List of Docker Compose project labels owned by this project. |
 | `links` | no | Menu links with `label` and `url`. |
 
 Do not add per-project `path` entries. They are a second tool-version authority,
@@ -101,6 +101,8 @@ Containers with an explicitly configured Compose project label are grouped
 under that project before name-prefix fallback is considered. Each container
 appears once; if multiple projects explicitly claim the same label, the first
 configured project wins, as with prefix-only matches.
+Non-list `compose` values are ignored for explicit ownership, so malformed
+optional metadata does not interrupt the menu. Name-prefix fallback still applies.
 
 ## Repository onboarding and rollout
 
