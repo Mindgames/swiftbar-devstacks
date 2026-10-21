@@ -980,6 +980,12 @@ def main(argv=None):
 
         links = project.get("links") or ([{"label": "Open", "url": project["open"]}]
                                          if project.get("open") else [])
+        links = [
+            link for link in links
+            if isinstance(link, dict)
+            and isinstance(link.get("label"), str)
+            and isinstance(link.get("url"), str)
+        ] if isinstance(links, list) else []
         if links:
             print(f"--Open | {FONT}")
             for link in links:
