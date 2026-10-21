@@ -143,6 +143,10 @@ migrated, its directory or mise files are missing, mise is unavailable, the lock
 cannot resolve Process Compose, or an action exits unsuccessfully.
 A non-string project directory disables its managed controls and folder action
 without interrupting status display or the menu's configuration editor.
+Optional `links` must be a list of objects with string `label` and `url` fields.
+Malformed values and entries are omitted without interrupting other menu items.
+The legacy `open` URL fallback still applies when `links` is absent or empty;
+non-string fallback URLs are omitted too.
 
 1. Confirm the configured `dir` is the intended repository.
 2. Run `mise which --locked -C <dir> process-compose` in a terminal.
