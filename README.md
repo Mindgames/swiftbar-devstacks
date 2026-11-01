@@ -7,7 +7,9 @@ Project controls run through the toolchain pinned by each repository. The
 plugin does not select or install Node, Python, pnpm, uv, or Process Compose.
 It uses `mise exec --locked -C <project-dir> -- <command>` for every managed
 action. Before controls are enabled, it isolates mise discovery and verifies
-that the repository `mise.toml` is the only loaded configuration.
+that only the repository `mise.toml` and an optional repository `package.json`
+declaring pnpm are loaded. The latter supports repositories that enable mise's
+pnpm idiomatic version file and pin pnpm in `packageManager`.
 
 Process status remains a direct read from the configured Process Compose REST
 API. SwiftBar does not start a shell or run mise during its five-second status
@@ -22,8 +24,9 @@ mise.
   machine-owned configuration
 - each controlled repository contains a trusted `mise.toml`, a current
   `mise.lock`, installed locked tools, and repository-owned lifecycle commands.
-  Additional parent, global, local, environment-specific, or legacy mise
-  configuration is excluded from managed actions.
+  A repository `package.json` may supply the pnpm version; other parent,
+  global, local, environment-specific, or legacy mise configuration is
+  excluded from managed actions.
 - Docker is optional; the plugin uses `DEVSTACKS_DOCKER_BIN`, the current
   non-interactive `PATH`, or the Docker Desktop application binary, in that
   order. Container sections are skipped when Docker is unavailable.
@@ -163,6 +166,8 @@ restarted, or was skipped, or a container health check is failing.
 ## Actions and isolation
 
 - Stack start, restart, and stop use only the configured lifecycle arrays.
+- Managed commands receive `MISE` set to the resolved absolute mise executable,
+  so repository Makefiles can reuse it even with SwiftBar's minimal `PATH`.
 - Process start, stop, restart, logs, and TUI use the target repository's locked
   Process Compose executable and configured REST port.
 - REST status and Process Compose controls use the same explicit IPv4 loopback

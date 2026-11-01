@@ -509,8 +509,22 @@ def _mise_preflight(mise_bin, project):
         ):
             return None, "mise config isolation returned an invalid configuration entry"
         config_paths = {os.path.realpath(item["path"]) for item in config_payload}
-        if config_paths != {expected_manifest}:
-            return None, "mise config isolation did not select only the repository manifest"
+        package_manifest = os.path.join(os.path.realpath(project["dir"]), "package.json")
+        # Repositories may pin pnpm via packageManager, enabled in mise.toml.
+        # Keep other idiomatic version files and inherited configs excluded.
+        unexpected_config = any(
+            os.path.realpath(item["path"]) != expected_manifest
+            and not (
+                os.path.realpath(item["path"]) == package_manifest
+                and item.get("tools") == ["pnpm"]
+            )
+            for item in config_payload
+        )
+        if expected_manifest not in config_paths or unexpected_config:
+            return None, (
+                "mise config isolation requires the repository mise.toml "
+                "and permits only its pnpm package.json as an additional source"
+            )
         result = subprocess.run(
             [mise_bin, "which", "--locked", "-C", project["dir"], "process-compose"],
             capture_output=True, text=True, timeout=8, env=environment,
@@ -631,6 +645,8 @@ def run_action(project_name, operation, arguments=(), config_path=None):
 
     invocation = mise_exec_command(mise_bin, project, command)
     environment = _mise_environment(project)
+    # Repository Makefiles must reuse this mise even with SwiftBar's minimal PATH.
+    environment["MISE"] = mise_bin
     if interactive:
         try:
             result = subprocess.run(invocation, env=environment)
