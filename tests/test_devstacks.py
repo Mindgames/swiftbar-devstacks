@@ -66,6 +66,12 @@ if [ "${1:-}" = "config" ]; then
   printf '%s\\n' "$MISE_STUB_CONFIG_JSON"
   exit 0
 fi
+if [ "${1:-}" = "exec" ] && [ "${MISE_STUB_RUN_COMMAND:-}" = "1" ]; then
+  shift 3
+  cd "$1" || exit 1
+  shift 2
+  exec "$@"
+fi
 exit "${MISE_STUB_EXEC_STATUS:-0}"
 """,
             encoding="utf-8",
@@ -329,6 +335,59 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             if name not in isolated_directories:
                 self.assertNotIn(name, environment)
 
+    def test_stop_stack_accepts_repository_pnpm_package_manifest(self):
+        (self.repository / "package.json").write_text(
+            '{"packageManager": "pnpm@10.33.0"}', encoding="utf-8"
+        )
+        config = json.dumps([
+            {"path": str(self.repository / "mise.toml"), "tools": ["process-compose"]},
+            {"path": str(self.repository / "package.json"), "tools": ["pnpm"]},
+        ])
+        with mock.patch.dict(os.environ, {"MISE_STUB_CONFIG_JSON": config}, clear=False):
+            self.assertEqual(self.invoke("down"), ["repository-lifecycle", "down"])
+        self.assertFalse(self.errors.exists())
+
+    def test_lifecycle_make_can_resolve_mise_with_swiftbar_path(self):
+        (self.repository / "Makefile").write_text(
+            'MISE ?= mise\ndown:\n\t@"$(MISE)" --version\n', encoding="utf-8"
+        )
+        self.write_config(dict(self.project, commands={
+            "up": ["make", "up"],
+            "restart": ["make", "restart"],
+            "down": ["make", "down"],
+        }))
+        with mock.patch.dict(
+            os.environ, {"MISE_STUB_RUN_COMMAND": "1", "MISE": "/stale/mise"}, clear=False
+        ):
+            result = DEVSTACKS.run_action(
+                self.project["name"], "down", config_path=str(self.config)
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(self.calls()[-1], ["--version"])
+        self.assertFalse(self.errors.exists())
+
+    def test_mise_preflight_rejects_unexpected_package_manifest_sources(self):
+        manifest = {"path": str(self.repository / "mise.toml"), "tools": ["process-compose"]}
+        cases = [
+            [manifest, {"path": str(self.root / "package.json"), "tools": ["pnpm"]}],
+            [manifest, {"path": str(self.repository / "package.json"), "tools": ["node", "pnpm"]}],
+            [manifest, {"path": str(self.repository / "package.json"), "tools": []}],
+            [manifest, {"path": str(self.repository / "package.json")}],
+            # pnpm cannot replace the required mise manifest.
+            [{"path": str(self.repository / "package.json"), "tools": ["pnpm"]}],
+        ]
+        for config in cases:
+            with self.subTest(config=config):
+                self.log.unlink(missing_ok=True)
+                with mock.patch.dict(
+                    os.environ, {"MISE_STUB_CONFIG_JSON": json.dumps(config)}, clear=False
+                ):
+                    result = DEVSTACKS.run_action(
+                        self.project["name"], "down", config_path=str(self.config)
+                    )
+                self.assertEqual(result, 2)
+                self.assertEqual(len(self.calls()), 1)
+
     def test_mise_preflight_rejects_any_additional_config(self):
         leaked = json.dumps(
             [
@@ -342,7 +401,7 @@ exit "${MISE_STUB_EXEC_STATUS:-0}"
             )
         self.assertEqual(result, 2)
         payload = json.loads(self.errors.read_text(encoding="utf-8"))
-        self.assertIn("only the repository manifest", payload[self.project["name"]]["message"])
+        self.assertIn("mise config isolation", payload[self.project["name"]]["message"])
         self.assertEqual(len(self.calls()), 1)
 
     def test_mise_preflight_preserves_an_untrusted_manifest_failure(self):
